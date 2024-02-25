@@ -95,8 +95,8 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
               script_pubkey: ScriptBuf::default(),
               amount: balance,
               height: self.height,
-              index: index as u32,
-              vout: input.previous_output.vout as i32,
+              index: u32::try_from(index).unwrap(),
+              vout: i32::try_from(input.previous_output.vout).unwrap(),
               timestamp: self.timestamp,
             }
             .store(),
@@ -176,7 +176,7 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
                 mint: etching.mint.map(|mint| MintEntry {
                   deadline: mint.deadline,
                   end: mint.term.map(|term| term + self.height),
-                  limit: mint.limit.map(|limit| limit.clamp(0, runes::MAX_LIMIT)),
+                  limit: mint.limit.map(|limit| limit.min(runes::MAX_LIMIT)),
                 }),
               }),
               Err(_) => None,
@@ -444,8 +444,8 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
             script_pubkey: tx.output[vout].script_pubkey.clone(),
             amount: balance,
             height: self.height,
-            index: index as u32,
-            vout: vout as i32,
+            index: u32::try_from(index).unwrap(),
+            vout: i32::try_from(vout).unwrap(),
             timestamp: self.timestamp,
           }
           .store(),
@@ -486,7 +486,7 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
             source: txid,
             script_pubkey: ScriptBuf::default(),
             height: self.height,
-            index: index as u32,
+            index: u32::try_from(index).unwrap(),
             vout: -1,
             timestamp: self.timestamp,
           }
@@ -507,8 +507,8 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
               amount,
               script_pubkey: ScriptBuf::default(),
               height: self.height,
-              index: index as u32,
-              vout: input.vout as i32,
+              index: u32::try_from(index).unwrap(),
+              vout: i32::try_from(input.vout).unwrap(),
               timestamp: self.timestamp,
             }
             .store(),

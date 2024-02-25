@@ -22,10 +22,10 @@ impl IndexerFunction {
       .transpose()
       .unwrap();
 
-    if count.is_none() {
-      0
+    if let Some(count_value) = count {
+      count_value + 1
     } else {
-      count.unwrap() + 1
+      0
     }
   }
 }

@@ -41,9 +41,9 @@ pub fn is_json_inscription_content(
   let inscription_content = inscription_content_option.as_ref().unwrap();
   let inscription_content_str = std::str::from_utf8(inscription_content).unwrap_or("");
 
-  return serde_json::from_slice::<Value>(&inscription_content).is_ok()
-    && inscription_content_str.contains("{")
-    && inscription_content_str.contains("}");
+  serde_json::from_slice::<Value>(inscription_content).is_ok()
+    && inscription_content_str.contains('{')
+    && inscription_content_str.contains('}')
 }
 
 pub fn is_text_inscription_content_type(inscription_content_type_option: &Option<Vec<u8>>) -> bool {
@@ -52,10 +52,11 @@ pub fn is_text_inscription_content_type(inscription_content_type_option: &Option
   }
 
   let inscription_content_type = inscription_content_type_option.as_ref().unwrap();
-  let inscription_content_type_str = std::str::from_utf8(&inscription_content_type).unwrap_or("");
-  return inscription_content_type_str == "text/plain"
+  let inscription_content_type_str = std::str::from_utf8(inscription_content_type).unwrap_or("");
+
+  inscription_content_type_str == "text/plain"
     || inscription_content_type_str.starts_with("text/plain;")
     || inscription_content_type_str == "application/json"
-    || inscription_content_type_str.starts_with("application/json;"); // NOTE: added application/json for JSON5 etc.
+    || inscription_content_type_str.starts_with("application/json;") // NOTE: added application/json for JSON5 etc.
 }
 // br-indexer: modified --> start

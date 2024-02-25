@@ -41,7 +41,9 @@ enum Origin {
 pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   pub(super) blessed_inscription_count: u64,
   pub(super) chain: Chain,
+  pub(super) content_type_to_count: &'a mut Table<'db, 'tx, Option<&'static [u8]>, u64>,
   pub(super) cursed_inscription_count: u64,
+  pub(super) event_sender: Option<&'a Sender<Event>>,
   pub(super) flotsam: Vec<Flotsam>,
   pub(super) height: u32,
   pub(super) home_inscription_count: u64,
@@ -197,6 +199,18 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           .pointer()
           .filter(|&pointer| pointer < total_output_value)
           .unwrap_or(offset);
+
+        let content_type = inscription.payload.content_type.as_deref();
+
+        let content_type_count = self
+          .content_type_to_count
+          .get(content_type)?
+          .map(|entry| entry.value())
+          .unwrap_or_default();
+
+        self
+          .content_type_to_count
+          .insert(content_type, content_type_count + 1)?;
 
         floating_inscriptions.push(Flotsam {
           inscription_id,
@@ -418,14 +432,23 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         self
           .sequence_number_to_inscription_transfer
           .insert(sequence_number_transfer, &new_inscription_transfer.store())?;
-        (
-          false,
-          self
-            .id_to_sequence_number
-            .get(&inscription_id.store())?
-            .unwrap()
-            .value(),
-        )
+        let sequence_number = self
+          .id_to_sequence_number
+          .get(&inscription_id.store())?
+          .unwrap()
+          .value();
+
+        if let Some(sender) = self.event_sender {
+          sender.blocking_send(Event::InscriptionTransferred {
+            block_height: self.height,
+            inscription_id,
+            new_location: new_satpoint,
+            old_location: old_satpoint,
+            sequence_number,
+          })?;
+        }
+
+        (false, sequence_number)
       }
       Origin::New {
         cursed,
@@ -504,7 +527,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           self.sat_to_sequence_number.insert(&n, &sequence_number)?;
         }
 
-        let parent = match parent {
+        let parent_sequence_number = match parent {
           Some(parent_id) => {
             let parent_sequence_number = self
               .id_to_sequence_number
@@ -520,6 +543,17 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           None => None,
         };
 
+        if let Some(sender) = self.event_sender {
+          sender.blocking_send(Event::InscriptionCreated {
+            block_height: self.height,
+            charms,
+            inscription_id,
+            location: (!unbound).then_some(new_satpoint),
+            parent_inscription_id: parent,
+            sequence_number,
+          })?;
+        }
+
         self.sequence_number_to_entry.insert(
           sequence_number,
           &InscriptionEntry {
@@ -528,7 +562,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
             height: self.height,
             id: inscription_id,
             inscription_number,
-            parent,
+            parent: parent_sequence_number,
             sat,
             sequence_number,
             timestamp: self.timestamp,
