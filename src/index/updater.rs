@@ -1,3 +1,4 @@
+use crate::indexer::function::IndexerFunction;
 use {
   self::{inscription_updater::InscriptionUpdater, rune_updater::RuneUpdater},
   super::{fetcher::Fetcher, *},
@@ -57,15 +58,28 @@ impl<'index> Updater<'_> {
     let mut wtx = self.index.begin_write()?;
     let starting_height = u32::try_from(self.index.client.get_block_count()?).unwrap() + 1;
 
-    wtx
-      .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
-      .insert(
-        &self.height,
-        &SystemTime::now()
-          .duration_since(SystemTime::UNIX_EPOCH)
-          .map(|duration| duration.as_millis())
-          .unwrap_or(0),
-      )?;
+    // @todo br-indexer: config height --> start
+    if self.height == 0 {
+      self.height = self.index.first_inscription_height;
+    }
+    log::info!("updater from height: {}", self.height);
+    // br-indexer: config height --> end
+
+    let write_height_to_ts = |wtx: &mut WriteTransaction, height: &u32| {
+      wtx
+        .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)
+        .expect("open table failed")
+        .insert(
+          height,
+          &SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0),
+        )
+        .expect("insert height failed");
+    };
+    write_height_to_ts(&mut wtx, &self.height);
+    // @todo br-indexer: modify indexer to use a different height for the starting block
 
     let mut progress_bar = if cfg!(test)
       || log_enabled!(log::Level::Info)
@@ -129,15 +143,7 @@ impl<'index> Updater<'_> {
           // write transaction
           break;
         }
-        wtx
-          .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
-          .insert(
-            &self.height,
-            &SystemTime::now()
-              .duration_since(SystemTime::UNIX_EPOCH)
-              .map(|duration| duration.as_millis())
-              .unwrap_or(0),
-          )?;
+        write_height_to_ts(&mut wtx, &self.height);
       }
 
       if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
@@ -389,6 +395,9 @@ impl<'index> Updater<'_> {
     let mut sequence_number_to_children = wtx.open_multimap_table(SEQUENCE_NUMBER_TO_CHILDREN)?;
     let mut sequence_number_to_inscription_entry =
       wtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY)?;
+    let mut sequence_number_to_inscription_transfer =
+      wtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?;
+    let mut sequence_number_to_rune_event = wtx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?;
     let mut sequence_number_to_satpoint = wtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
     let mut transaction_id_to_transaction = wtx.open_table(TRANSACTION_ID_TO_TRANSACTION)?;
@@ -413,12 +422,12 @@ impl<'index> Updater<'_> {
       .map(|unbound_inscriptions| unbound_inscriptions.value())
       .unwrap_or(0);
 
-    let next_sequence_number = sequence_number_to_inscription_entry
-      .iter()?
-      .next_back()
-      .and_then(|result| result.ok())
-      .map(|(number, _id)| number.value() + 1)
-      .unwrap_or(0);
+    let next_sequence_number =
+      IndexerFunction::get_next_sequence_number(sequence_number_to_inscription_entry.iter()?);
+    let next_sequence_number_transfer =
+      IndexerFunction::get_next_sequence_number(sequence_number_to_inscription_transfer.iter()?);
+    let next_sequence_number_rune_event =
+      IndexerFunction::get_next_sequence_number(sequence_number_to_rune_event.iter()?);
 
     let home_inscription_count = home_inscriptions.len()?;
 
@@ -441,6 +450,8 @@ impl<'index> Updater<'_> {
       satpoint_to_sequence_number: &mut satpoint_to_sequence_number,
       sequence_number_to_children: &mut sequence_number_to_children,
       sequence_number_to_entry: &mut sequence_number_to_inscription_entry,
+      next_sequence_number_transfer,
+      sequence_number_to_inscription_transfer: &mut sequence_number_to_inscription_transfer,
       sequence_number_to_satpoint: &mut sequence_number_to_satpoint,
       timestamp: block.header.time,
       transaction_buffer: Vec::new(),
@@ -595,6 +606,7 @@ impl<'index> Updater<'_> {
         .unwrap_or(0);
 
       let mut rune_updater = RuneUpdater {
+        chain: self.index.options.chain(), // @todo br-indexer: config chain
         height: self.height,
         id_to_entry: &mut rune_id_to_rune_entry,
         inscription_id_to_sequence_number: &mut inscription_id_to_sequence_number,
@@ -603,6 +615,8 @@ impl<'index> Updater<'_> {
         rune_to_id: &mut rune_to_rune_id,
         runes,
         sequence_number_to_rune_id: &mut sequence_number_to_rune_id,
+        sequence_number_to_rune_event: &mut sequence_number_to_rune_event, // @todo br-indexer: config sequence_number_to_rune_event
+        next_sequence_number_rune_event, // @todo br-indexer: config next_sequence_number_rune_event
         statistic_to_count: &mut statistic_to_count,
         timestamp: block.header.time,
         transaction_id_to_rune: &mut transaction_id_to_rune,

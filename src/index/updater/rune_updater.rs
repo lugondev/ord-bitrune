@@ -3,6 +3,8 @@ use {
   crate::runes::{varint, Edict, Runestone, CLAIM_BIT},
 };
 
+use crate::indexer::rune_event::{RuneEvent, RuneEventEntry, RuneEventEntryValue};
+
 fn claim(id: u128) -> Option<u128> {
   (id & CLAIM_BIT != 0).then_some(id ^ CLAIM_BIT)
 }
@@ -25,6 +27,7 @@ pub(crate) struct RuneUpdate {
 }
 
 pub(super) struct RuneUpdater<'a, 'db, 'tx> {
+  pub(super) chain: Chain,
   pub(super) height: u32,
   pub(super) id_to_entry: &'a mut Table<'db, 'tx, RuneIdValue, RuneEntryValue>,
   pub(super) inscription_id_to_sequence_number: &'a Table<'db, 'tx, InscriptionIdValue, u32>,
@@ -33,11 +36,21 @@ pub(super) struct RuneUpdater<'a, 'db, 'tx> {
   pub(super) rune_to_id: &'a mut Table<'db, 'tx, u128, RuneIdValue>,
   pub(super) runes: u64,
   pub(super) sequence_number_to_rune_id: &'a mut Table<'db, 'tx, u32, RuneIdValue>,
+  pub(super) sequence_number_to_rune_event: &'a mut Table<'db, 'tx, u32, RuneEventEntryValue>,
+  pub(super) next_sequence_number_rune_event: u32,
   pub(super) statistic_to_count: &'a mut Table<'db, 'tx, u64, u64>,
   pub(super) timestamp: u32,
   pub(super) transaction_id_to_rune: &'a mut Table<'db, 'tx, &'static TxidValue, u128>,
   pub(super) updates: HashMap<RuneId, RuneUpdate>,
 }
+
+// @todo br: indexer - create rune event --> start
+pub fn rune_event(rune_actions: &mut HashMap<u128, RuneEvent>, id: u128, event: RuneEvent) {
+  if rune_actions.entry(id).or_insert(RuneEvent::Mint).to_u8() == 0 {
+    rune_actions.insert(id, event);
+  }
+}
+// br: indexer - create rune event --> end
 
 impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
   pub(super) fn index_runes(&mut self, index: usize, tx: &Transaction, txid: Txid) -> Result<()> {
@@ -45,6 +58,8 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
 
     // A mapping of rune ID to un-allocated balance of that rune
     let mut unallocated: HashMap<u128, u128> = HashMap::new();
+    let mut rune_actions: HashMap<u128, RuneEvent> = HashMap::new(); // @todo br: indexer
+    let mut rune_inputs: HashMap<u128, Vec<OutPoint>> = HashMap::new(); // @todo br: indexer
 
     // Increment unallocated runes with the runes in this transaction's inputs
     for input in &tx.input {
@@ -60,6 +75,33 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
           let (balance, len) = varint::decode(&buffer[i..]);
           i += len;
           *unallocated.entry(id).or_default() += balance;
+
+          // @todo br: indexer - new input --> start
+          rune_inputs
+            .entry(id)
+            .or_default()
+            .push(input.previous_output);
+          rune_event(&mut rune_actions, id, RuneEvent::Transfer);
+          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+          self.next_sequence_number_rune_event += 1;
+          self.sequence_number_to_rune_event.insert(
+            next_sequence_number_rune_event,
+            &RuneEventEntry {
+              rune_id: RuneId::try_from(id).unwrap(),
+              network: self.chain.network(),
+              event: RuneEvent::Used,
+              source: txid,
+              txid: input.previous_output.txid,
+              script_pubkey: ScriptBuf::default(),
+              amount: balance,
+              height: self.height,
+              index: index as u32,
+              vout: input.previous_output.vout as i32,
+              timestamp: self.timestamp,
+            }
+            .store(),
+          )?;
+          // br: indexer - new input --> end
         }
       }
     }
@@ -387,6 +429,28 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
       for (id, balance) in balances {
         varint::encode_to_vec(id, &mut buffer);
         varint::encode_to_vec(balance, &mut buffer);
+
+        // @todo br: indexer - new output --> start
+        let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+        self.next_sequence_number_rune_event += 1;
+        self.sequence_number_to_rune_event.insert(
+          next_sequence_number_rune_event,
+          &RuneEventEntry {
+            rune_id: RuneId::try_from(id).unwrap(),
+            network: self.chain.network(),
+            event: *rune_actions.entry(id).or_insert(RuneEvent::Mint),
+            txid,
+            source: txid,
+            script_pubkey: tx.output[vout].script_pubkey.clone(),
+            amount: balance,
+            height: self.height,
+            index: index as u32,
+            vout: vout as i32,
+            timestamp: self.timestamp,
+          }
+          .store(),
+        )?;
+        // br: indexer - new output --> end
       }
 
       self.outpoint_to_balances.insert(
@@ -406,6 +470,52 @@ impl<'a, 'db, 'tx> RuneUpdater<'a, 'db, 'tx> {
         .entry(RuneId::try_from(id).unwrap())
         .or_default()
         .burned += amount;
+
+      // @todo br: indexer burn rune --> end
+      if rune_inputs.entry(id).or_default().is_empty() {
+        let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+        self.next_sequence_number_rune_event += 1;
+        self.sequence_number_to_rune_event.insert(
+          next_sequence_number_rune_event,
+          &RuneEventEntry {
+            rune_id: RuneId::try_from(id).unwrap(),
+            network: self.chain.network(),
+            event: RuneEvent::Burn,
+            txid,
+            amount,
+            source: txid,
+            script_pubkey: ScriptBuf::default(),
+            height: self.height,
+            index: index as u32,
+            vout: -1,
+            timestamp: self.timestamp,
+          }
+          .store(),
+        )?;
+      } else {
+        for input in rune_inputs.entry(id).or_default().iter() {
+          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+          self.next_sequence_number_rune_event += 1;
+          self.sequence_number_to_rune_event.insert(
+            next_sequence_number_rune_event,
+            &RuneEventEntry {
+              rune_id: RuneId::try_from(id).unwrap(),
+              network: self.chain.network(),
+              event: RuneEvent::Burn,
+              source: txid,
+              txid: input.txid,
+              amount,
+              script_pubkey: ScriptBuf::default(),
+              height: self.height,
+              index: index as u32,
+              vout: input.vout as i32,
+              timestamp: self.timestamp,
+            }
+            .store(),
+          )?;
+        }
+      }
+      // br: indexer --> end
     }
 
     Ok(())

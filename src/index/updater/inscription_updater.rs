@@ -1,4 +1,5 @@
 use super::*;
+use crate::indexer::inscription_transfer::{InscriptionTransfer, InscriptionTransferValue};
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum Curse {
@@ -60,6 +61,9 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
     &'a mut MultimapTable<'db, 'tx, &'static SatPointValue, u32>,
   pub(super) sequence_number_to_children: &'a mut MultimapTable<'db, 'tx, u32, u32>,
   pub(super) sequence_number_to_entry: &'a mut Table<'db, 'tx, u32, InscriptionEntryValue>,
+  pub(super) next_sequence_number_transfer: u32,
+  pub(super) sequence_number_to_inscription_transfer:
+    &'a mut Table<'db, 'tx, u32, InscriptionTransferValue>,
   pub(super) sequence_number_to_satpoint: &'a mut Table<'db, 'tx, u32, &'static SatPointValue>,
   pub(super) timestamp: u32,
   pub(super) unbound_inscriptions: u64,
@@ -294,7 +298,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           offset: flotsam.offset - output_value,
         };
 
-        new_locations.push((new_satpoint, inscriptions.next().unwrap()));
+        new_locations.push((new_satpoint, tx_out, inscriptions.next().unwrap()));
       }
 
       range_to_vout.insert((output_value, end), vout.try_into().unwrap());
@@ -310,7 +314,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       );
     }
 
-    for (new_satpoint, mut flotsam) in new_locations.into_iter() {
+    for (new_satpoint, tx_out, mut flotsam) in new_locations.into_iter() {
       let new_satpoint = match flotsam.origin {
         Origin::New {
           pointer: Some(pointer),
@@ -332,7 +336,13 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         _ => new_satpoint,
       };
 
-      self.update_inscription_location(input_sat_ranges, flotsam, new_satpoint)?;
+      self.update_inscription_location(
+        Some(&tx_out.script_pubkey),
+        Some(&tx_out.value),
+        input_sat_ranges,
+        flotsam,
+        new_satpoint,
+      )?;
     }
 
     if is_coinbase {
@@ -341,7 +351,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           outpoint: OutPoint::null(),
           offset: self.lost_sats + flotsam.offset - output_value,
         };
-        self.update_inscription_location(input_sat_ranges, flotsam, new_satpoint)?;
+        self.update_inscription_location(None, None, input_sat_ranges, flotsam, new_satpoint)?;
       }
       self.lost_sats += self.reward - output_value;
       Ok(())
@@ -376,17 +386,38 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
 
   fn update_inscription_location(
     &mut self,
+    new_script_pubkey: Option<&ScriptBuf>,
+    new_output_value: Option<&u64>,
     input_sat_ranges: Option<&VecDeque<(u64, u64)>>,
     flotsam: Flotsam,
     new_satpoint: SatPoint,
   ) -> Result {
     let inscription_id = flotsam.inscription_id;
+
+    // @todo: br-indexer: modified --> start
+    let new_inscription_transfer = InscriptionTransfer {
+      inscription_id,
+      network: self.chain.network(),
+      txid: new_satpoint.outpoint.txid,
+      to_script_pubkey: new_script_pubkey.cloned().unwrap_or(ScriptBuf::default()),
+      height: self.height,
+      output_value: *new_output_value.unwrap_or(&0),
+      index: inscription_id.index,
+      vout: new_satpoint.outpoint.vout,
+    };
+    // br-indexer: modified --> end
+
     let (unbound, sequence_number) = match flotsam.origin {
       Origin::Old { old_satpoint } => {
         self
           .satpoint_to_sequence_number
           .remove_all(&old_satpoint.store())?;
 
+        let sequence_number_transfer = self.next_sequence_number_transfer;
+        self.next_sequence_number_transfer += 1;
+        self
+          .sequence_number_to_inscription_transfer
+          .insert(sequence_number_transfer, &new_inscription_transfer.store())?;
         (
           false,
           self
@@ -519,6 +550,14 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           } else {
             self.home_inscription_count += 1;
           }
+        }
+
+        if !unbound {
+          let sequence_number_transfer = self.next_sequence_number_transfer;
+          self.next_sequence_number_transfer += 1;
+          self
+            .sequence_number_to_inscription_transfer
+            .insert(sequence_number_transfer, &new_inscription_transfer.store())?;
         }
 
         (unbound, sequence_number)

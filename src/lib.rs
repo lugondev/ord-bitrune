@@ -121,6 +121,7 @@ mod epoch;
 mod fee_rate;
 mod height;
 pub mod index;
+pub mod indexer; // @todo: add indexer mod to lib
 mod inscriptions;
 mod object;
 mod options;

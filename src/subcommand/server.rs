@@ -1,3 +1,12 @@
+use crate::indexer::inscription_entries::{
+  is_json_inscription_content, is_text_inscription_content_type, InscriptionEntry, InscriptionInfo,
+};
+use crate::indexer::inscription_transfer::InscriptionTransfer;
+use crate::indexer::rune_event::RuneEventEntry;
+use crate::templates::{
+  InscriptionsEntriesJson, InscriptionsTransfersJson, RunesEventsJson, StatsUpdaterJson,
+};
+
 use {
   self::{
     accept_encoding::AcceptEncoding,
@@ -275,6 +284,18 @@ impl Server {
         .route("/rune/:rune", get(Self::rune))
         .route("/runes", get(Self::runes))
         .route("/runes/balances", get(Self::runes_balances))
+        // @todo: br-indexer: add router --> start
+        .route("/runes/events/:page", get(Self::runes_events))
+        .route(
+          "/inscriptions/entries/:page",
+          get(Self::inscriptions_entries_paginated),
+        )
+        .route(
+          "/inscriptions/transfers/:page",
+          get(Self::inscriptions_transfers),
+        )
+        .route("/stats", get(Self::stats_updater))
+        // @todo: br-indexer: add router --> end
         .route("/sat/:sat", get(Self::sat))
         .route("/search", get(Self::search_by_query))
         .route("/search/*query", get(Self::search_by_path))
@@ -703,6 +724,185 @@ impl Server {
     })
   }
 
+  // @todo: br-indexer: add function for server --> start
+  async fn stats_updater(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let (total_runes_events, total_inscriptions, total_inscriptions_transfers) =
+        index.get_stats_updater()?;
+      Ok(
+        Json(StatsUpdaterJson {
+          network: server_config.chain.network(),
+          runes: index.runes()?.len() as u32,
+          inscriptions: total_inscriptions,
+          inscriptions_transfer: total_inscriptions_transfers,
+          runes_events: total_runes_events,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn inscriptions_entries_paginated(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(page_index): Path<u32>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let page_size = 200;
+      let mut data_size = 0;
+      let (inscriptions, total, more) =
+        index.get_inscriptions_entries_paginated(page_size, page_index)?;
+
+      let inscriptions_entries: Vec<(u32, Option<InscriptionEntry>)> = inscriptions
+        .into_iter()
+        .map(|(seq_no, inscription_id)| {
+          let info_result = Index::inscription_info(
+            &index,
+            InscriptionQuery::from_str(inscription_id.to_string().as_str()).unwrap(),
+          );
+          let mut entry: Option<InscriptionEntry> = None;
+
+          if info_result.is_ok() {
+            let info = info_result.unwrap();
+            if info.is_some() {
+              let info_unwrap = info.unwrap();
+              let mut body = None;
+              let content_length = info_unwrap.inscription.content_length().unwrap_or_default();
+              let is_json = is_json_inscription_content(
+                &info_unwrap.inscription.content_type,
+                &info_unwrap.inscription.body,
+              );
+              if content_length < 200 {
+                if is_json {
+                  body = Some(
+                    String::from_utf8(info_unwrap.inscription.body.unwrap_or(Vec::new()))
+                      .unwrap_or_default(),
+                  );
+                } else if is_text_inscription_content_type(&info_unwrap.inscription.content_type) {
+                  body = Some(hex::encode(
+                    info_unwrap.inscription.body.unwrap_or(Vec::new()),
+                  ));
+                }
+              }
+              entry = Option::from(InscriptionEntry {
+                inscription_id,
+                seq_no: info_unwrap.entry.sequence_number,
+                inscription_no: info_unwrap.entry.inscription_number,
+                height: info_unwrap.entry.height,
+                fee: info_unwrap.entry.fee,
+                timestamp: info_unwrap.entry.timestamp,
+                network: server_config.chain.network(),
+                info: InscriptionInfo {
+                  body,
+                  content_encoding: String::from_utf8(
+                    info_unwrap.inscription.content_encoding.unwrap_or_default(),
+                  )
+                  .ok(),
+                  content_type: Some(
+                    String::from_utf8(info_unwrap.inscription.content_type.unwrap_or_default())
+                      .unwrap_or_default(),
+                  ),
+                  metadata: String::from_utf8(info_unwrap.inscription.metadata.unwrap_or_default())
+                    .ok(),
+                  metaprotocol: String::from_utf8(
+                    info_unwrap.inscription.metaprotocol.unwrap_or_default(),
+                  )
+                  .ok(),
+                  is_json,
+                  content_length,
+                },
+                outpoint: info_unwrap.satpoint.outpoint,
+              });
+            }
+          }
+          data_size += 1;
+          (seq_no, entry)
+        })
+        .collect();
+
+      Ok(
+        Json(InscriptionsEntriesJson {
+          entries: inscriptions_entries,
+          page_index,
+          more,
+          total,
+          page_size: data_size,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn runes_events(
+    Extension(index): Extension<Arc<Index>>,
+    Path(page_index): Path<u32>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let page_size = 5000;
+      let mut data_size = 0;
+      let (runes_events, total, more) = index.get_runes_events_paginated(page_size, page_index)?;
+      let runes_events_map_address: Vec<(u32, String, RuneEventEntry)> = runes_events
+        .into_iter()
+        .map(|(seq_no, event)| {
+          data_size += 1;
+          let script_pk = event.script_pubkey.clone();
+          (seq_no, script_pk.to_hex_string(), event)
+        })
+        .collect();
+
+      Ok(
+        Json(RunesEventsJson {
+          events: runes_events_map_address,
+          total,
+          page_index,
+          page_size: data_size,
+          more,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn inscriptions_transfers(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(page_index): Path<u32>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let page_size = 10000;
+      let mut data_size = 0;
+      let (transfers, total, more) =
+        index.get_inscriptions_transfers_paginated(page_size, page_index)?;
+      let transfers_map_address: Vec<(u32, String, InscriptionTransfer)> = transfers
+        .into_iter()
+        .map(|(inscription_id, transfer)| {
+          let mut address_output = String::new();
+          if let Ok(address) = server_config.chain.address_from_script(&Script::from_bytes(
+            transfer.to_script_pubkey.clone().as_bytes(),
+          )) {
+            address_output = address.to_string();
+          }
+          data_size += 1;
+          (inscription_id, address_output.to_string(), transfer)
+        })
+        .collect();
+
+      Ok(
+        Json(InscriptionsTransfersJson {
+          transfers: transfers_map_address,
+          total,
+          page_index,
+          page_size: data_size as u32,
+          more,
+        })
+        .into_response(),
+      )
+    })
+  }
+  // @todo: br-indexer: add function for server --> end
   async fn home(
     Extension(server_config): Extension<Arc<ServerConfig>>,
     Extension(index): Extension<Arc<Index>>,
@@ -1854,7 +2054,7 @@ mod tests {
       assert_eq!(
         response
           .headers()
-          .get(header::CONTENT_SECURITY_POLICY,)
+          .get(header::CONTENT_SECURITY_POLICY)
           .unwrap(),
         content_security_policy
       );
@@ -2644,7 +2844,7 @@ mod tests {
         runes: vec![(
           SpacedRune {
             rune: Rune(RUNE),
-            spacers: 0
+            spacers: 0,
           },
           Pile {
             amount: 340282366920938463463374607431768211455,
@@ -2837,6 +3037,7 @@ mod tests {
 </dl>.*",
     );
   }
+
   #[test]
   fn sat_number() {
     TestServer::new().assert_response_regex("/sat/0", StatusCode::OK, ".*<h1>Sat 0</h1>.*");
@@ -3138,7 +3339,7 @@ mod tests {
     test_server.assert_response_regex(
       "/blocks",
       StatusCode::OK,
-      ".*<ol start=96 reversed class=block-list>\n(  <li><a href=/block/[[:xdigit:]]{64}>[[:xdigit:]]{64}</a></li>\n){95}</ol>.*"
+      ".*<ol start=96 reversed class=block-list>\n(  <li><a href=/block/[[:xdigit:]]{64}>[[:xdigit:]]{64}</a></li>\n){95}</ol>.*",
     );
   }
 
@@ -4916,7 +5117,7 @@ next
       SatInscriptionsJson {
         ids: vec![],
         page: 0,
-        more: false
+        more: false,
       }
     );
 

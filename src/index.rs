@@ -1,3 +1,7 @@
+use crate::indexer::function::IndexerFunction;
+use crate::indexer::inscription_transfer::{InscriptionTransfer, InscriptionTransferValue};
+use crate::indexer::rune_event::{RuneEventEntry, RuneEventEntryValue};
+
 use {
   self::{
     entry::{
@@ -77,6 +81,8 @@ define_table! { STATISTIC_TO_COUNT, u64, u64 }
 define_table! { TRANSACTION_ID_TO_RUNE, &TxidValue, u128 }
 define_table! { TRANSACTION_ID_TO_TRANSACTION, &TxidValue, &[u8] }
 define_table! { WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP, u32, u128 }
+define_table! { SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER, u32, InscriptionTransferValue } // @todo: br-indexer: add this table
+define_table! { SEQUENCE_NUMBER_TO_RUNE_EVENT, u32, RuneEventEntryValue } // @todo: br-indexer: add this table
 
 #[derive(Copy, Clone)]
 pub(crate) enum Statistic {
@@ -329,6 +335,8 @@ impl Index {
         tx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
         tx.open_table(TRANSACTION_ID_TO_RUNE)?;
         tx.open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?;
+        tx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?; // @todo: br-indexer: add this table
+        tx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?; // @todo: br-indexer: add this table
 
         {
           let mut outpoint_to_sat_ranges = tx.open_table(OUTPOINT_TO_SAT_RANGES)?;
@@ -1563,6 +1571,127 @@ impl Index {
 
     Ok((inscriptions, more))
   }
+
+  // @todo: br-indexer: add index function --> start
+  pub(crate) fn get_stats_updater(&self) -> Result<(u32, u32, u32)> {
+    let rtx = self.database.begin_read()?;
+
+    let sequence_number_to_inscription_entry =
+      rtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY)?;
+    let sequence_number_to_inscriptions_transfers =
+      rtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?;
+    let sequence_number_to_rune_event_entry = rtx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?;
+
+    let total_inscriptions =
+      IndexerFunction::count_seq_data(sequence_number_to_inscription_entry.iter()?);
+    let total_inscriptions_transfers =
+      IndexerFunction::count_seq_data(sequence_number_to_inscriptions_transfers.iter()?);
+    let total_runes_events =
+      IndexerFunction::count_seq_data(sequence_number_to_rune_event_entry.iter()?);
+
+    Ok((
+      total_runes_events,
+      total_inscriptions,
+      total_inscriptions_transfers,
+    ))
+  }
+
+  pub(crate) fn get_inscriptions_entries_paginated(
+    &self,
+    page_size: u32,
+    page_index: u32,
+  ) -> Result<(Vec<(u32, InscriptionId)>, u32, bool)> {
+    let rtx = self.database.begin_read()?;
+
+    let sequence_number_to_inscription_entry =
+      rtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY)?;
+
+    let total = IndexerFunction::count_seq_data(sequence_number_to_inscription_entry.iter()?);
+
+    let start = page_size.saturating_mul(page_index);
+
+    let end = start.saturating_add(page_size);
+
+    let mut inscriptions = sequence_number_to_inscription_entry
+      .range(start..=end)?
+      .rev()
+      .map(|result| {
+        result.map(|(number, entry)| (number.value(), InscriptionEntry::load(entry.value()).id))
+      })
+      .collect::<Result<Vec<(u32, InscriptionId)>, StorageError>>()?;
+
+    let more = u32::try_from(inscriptions.len()).unwrap_or(u32::MAX) > page_size;
+
+    if more {
+      inscriptions.remove(0);
+    }
+
+    Ok((inscriptions, total, more))
+  }
+
+  pub(crate) fn get_runes_events_paginated(
+    &self,
+    page_size: u32,
+    page_index: u32,
+  ) -> Result<(Vec<(u32, RuneEventEntry)>, u32, bool)> {
+    let rtx = self.database.begin_read()?;
+    let sequence_number_to_rune_event_entry = rtx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?;
+
+    let total = IndexerFunction::count_seq_data(sequence_number_to_rune_event_entry.iter()?);
+
+    let start = page_size.saturating_mul(page_index);
+
+    let end = start.saturating_add(page_size);
+
+    let mut runes_events = sequence_number_to_rune_event_entry
+      .range(start..=end)?
+      .rev()
+      .map(|result| {
+        result.map(|(number, entry)| (number.value(), RuneEventEntry::load(entry.value())))
+      })
+      .collect::<Result<Vec<(u32, RuneEventEntry)>, StorageError>>()?;
+
+    let more = u32::try_from(runes_events.len()).unwrap_or(u32::MAX) > page_size;
+
+    if more {
+      runes_events.remove(0);
+    }
+
+    Ok((runes_events, total, more))
+  }
+
+  pub(crate) fn get_inscriptions_transfers_paginated(
+    &self,
+    page_size: u32,
+    page_index: u32,
+  ) -> Result<(Vec<(u32, InscriptionTransfer)>, u32, bool)> {
+    let rtx = self.database.begin_read()?;
+    let sequence_number_to_inscriptions_transfers =
+      rtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?;
+
+    let total = IndexerFunction::count_seq_data(sequence_number_to_inscriptions_transfers.iter()?);
+
+    let start = page_size.saturating_mul(page_index);
+
+    let end = start.saturating_add(page_size);
+
+    let mut runes_events = sequence_number_to_inscriptions_transfers
+      .range(start..=end)?
+      .rev()
+      .map(|result| {
+        result.map(|(number, entry)| (number.value(), InscriptionTransfer::load(entry.value())))
+      })
+      .collect::<Result<Vec<(u32, InscriptionTransfer)>, StorageError>>()?;
+
+    let more = u32::try_from(runes_events.len()).unwrap_or(u32::MAX) > page_size;
+
+    if more {
+      runes_events.remove(0);
+    }
+
+    Ok((runes_events, total, more))
+  }
+  // @todo: br-indexer: add index function --> end
 
   pub(crate) fn get_inscriptions_in_block(&self, block_height: u32) -> Result<Vec<InscriptionId>> {
     let rtx = self.database.begin_read()?;
