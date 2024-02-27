@@ -10,5 +10,7 @@ FROM debian:bookworm-slim
 
 COPY --from=builder /usr/src/ord/target/release/ord /usr/local/bin
 
+RUN apt update && apt-get install libssl-dev -y
+
 ENV RUST_BACKTRACE=1
 ENV RUST_LOG=info
