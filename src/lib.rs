@@ -106,6 +106,7 @@ mod decimal;
 mod deserialize_from_str;
 mod fee_rate;
 pub mod index;
+pub mod indexer; // @br-indexer: add indexer mod to lib
 mod inscriptions;
 mod into_usize;
 mod macros;

@@ -52,6 +52,9 @@ pub(super) struct InscriptionUpdater<'a, 'tx> {
   pub(super) inscription_number_to_sequence_number: &'a mut Table<'tx, i32, u32>,
   pub(super) lost_sats: u64,
   pub(super) next_sequence_number: u32,
+  pub(super) next_sequence_number_transfer: u32, // @br-indexer
+  pub(super) sequence_number_to_inscription_transfer:
+    &'a mut Table<'tx, u32, InscriptionTransferValue>, // @br-indexer
   pub(super) outpoint_to_value: &'a mut Table<'tx, &'static OutPointValue, u64>,
   pub(super) reward: u64,
   pub(super) transaction_buffer: Vec<u8>,

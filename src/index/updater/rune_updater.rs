@@ -1,6 +1,10 @@
 use super::*;
+use crate::indexer::rune_event::{RuneEvent, RuneEventEntry, RuneEventEntryValue};
 
 pub(super) struct RuneUpdater<'a, 'tx, 'client> {
+  pub(super) chain: Chain,
+  pub(super) sequence_number_to_rune_event: &'a mut Table<'tx, u32, RuneEventEntryValue>,
+  pub(super) next_sequence_number_rune_event: u32,
   pub(super) block_time: u32,
   pub(super) burned: HashMap<RuneId, Lot>,
   pub(super) client: &'client Client,
@@ -16,11 +20,21 @@ pub(super) struct RuneUpdater<'a, 'tx, 'client> {
   pub(super) transaction_id_to_rune: &'a mut Table<'tx, &'static TxidValue, u128>,
 }
 
+// @br-indexer - create rune event --> start
+pub fn rune_event(rune_actions: &mut HashMap<RuneId, RuneEvent>, id: RuneId, event: RuneEvent) {
+  if rune_actions.entry(id).or_insert(RuneEvent::Mint).to_u8() == 0 {
+    rune_actions.insert(id, event);
+  }
+}
+// @br-indexer - create rune event --> end
+
 impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
   pub(super) fn index_runes(&mut self, tx_index: u32, tx: &Transaction, txid: Txid) -> Result<()> {
     let artifact = Runestone::decipher(tx);
 
-    let mut unallocated = self.unallocated(tx)?;
+    let mut rune_actions: HashMap<RuneId, RuneEvent> = HashMap::new(); // @br-indexer
+    let mut rune_inputs: HashMap<RuneId, Vec<OutPoint>> = HashMap::new(); // @br-indexer
+    let mut unallocated = self.unallocated(tx, txid, &mut rune_actions, &mut rune_inputs)?;
 
     let mut allocated: Vec<HashMap<RuneId, Lot>> = vec![HashMap::new(); tx.output.len()];
 
@@ -181,6 +195,25 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
 
       for (id, balance) in balances {
         Index::encode_rune_balance(id, balance.n(), &mut buffer);
+        // @br-indexer - new output --> start
+        let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+        self.next_sequence_number_rune_event += 1;
+        self.sequence_number_to_rune_event.insert(
+          next_sequence_number_rune_event,
+          &RuneEventEntry {
+            rune_id: id,
+            network: self.chain.network(),
+            event: *rune_actions.entry(id).or_insert(RuneEvent::Mint),
+            txid,
+            source: txid,
+            script_pubkey: tx.output[vout].script_pubkey.clone(),
+            amount: balance.n(),
+            vout: i32::try_from(vout).unwrap(),
+            timestamp: self.block_time,
+          }
+          .store(),
+        )?;
+        // @br-indexer - new output --> end
       }
 
       self.outpoint_to_balances.insert(
@@ -196,6 +229,47 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     // increment entries with burned runes
     for (id, amount) in burned {
       *self.burned.entry(id).or_default() += amount;
+      // @br-indexer burn rune --> end
+      if rune_inputs.entry(id).or_default().is_empty() {
+        let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+        self.next_sequence_number_rune_event += 1;
+        self.sequence_number_to_rune_event.insert(
+          next_sequence_number_rune_event,
+          &RuneEventEntry {
+            rune_id: id,
+            network: self.chain.network(),
+            event: RuneEvent::Burn,
+            txid,
+            amount: amount.n(),
+            source: txid,
+            script_pubkey: ScriptBuf::default(),
+            vout: -1,
+            timestamp: self.block_time,
+          }
+          .store(),
+        )?;
+      } else {
+        for input in rune_inputs.entry(id).or_default().iter() {
+          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+          self.next_sequence_number_rune_event += 1;
+          self.sequence_number_to_rune_event.insert(
+            next_sequence_number_rune_event,
+            &RuneEventEntry {
+              rune_id: RuneId::try_from(id).unwrap(),
+              network: self.chain.network(),
+              event: RuneEvent::Burn,
+              source: txid,
+              txid: input.txid,
+              amount: amount.n(),
+              script_pubkey: ScriptBuf::default(),
+              vout: i32::try_from(input.vout).unwrap(),
+              timestamp: self.block_time,
+            }
+            .store(),
+          )?;
+        }
+      }
+      // br-indexer --> end
     }
 
     Ok(())
@@ -410,7 +484,13 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     Ok(false)
   }
 
-  fn unallocated(&mut self, tx: &Transaction) -> Result<HashMap<RuneId, Lot>> {
+  fn unallocated(
+    &mut self,
+    tx: &Transaction,
+    txid: Txid,
+    rune_actions: &mut HashMap<RuneId, RuneEvent>,
+    rune_inputs: &mut HashMap<RuneId, Vec<OutPoint>>,
+  ) -> Result<HashMap<RuneId, Lot>> {
     // map of rune ID to un-allocated balance of that rune
     let mut unallocated: HashMap<RuneId, Lot> = HashMap::new();
 
@@ -426,6 +506,32 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           let ((id, balance), len) = Index::decode_rune_balance(&buffer[i..]).unwrap();
           i += len;
           *unallocated.entry(id).or_default() += balance;
+
+          // @br-indexer - new input --> start
+          rune_inputs
+            .entry(id)
+            .or_default()
+            .push(input.previous_output);
+
+          rune_event(rune_actions, id, RuneEvent::Transfer);
+          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+          self.next_sequence_number_rune_event += 1;
+          self.sequence_number_to_rune_event.insert(
+            next_sequence_number_rune_event,
+            &RuneEventEntry {
+              rune_id: RuneId::try_from(id).unwrap(),
+              network: self.chain.network(),
+              event: RuneEvent::Used,
+              source: txid,
+              txid: input.previous_output.txid,
+              script_pubkey: ScriptBuf::default(),
+              amount: balance,
+              vout: i32::try_from(input.previous_output.vout).unwrap(),
+              timestamp: self.block_time,
+            }
+            .store(),
+          )?;
+          // @br-indexer - new input --> end
         }
       }
     }

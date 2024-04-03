@@ -1,3 +1,4 @@
+use crate::indexer::constants::IndexerHeight;
 use {
   self::{inscription_updater::InscriptionUpdater, rune_updater::RuneUpdater},
   super::{fetcher::Fetcher, *},
@@ -45,6 +46,16 @@ impl<'index> Updater<'index> {
     let start = Instant::now();
     let starting_height = u32::try_from(self.index.client.get_block_count()?).unwrap() + 1;
     let starting_index_height = self.height;
+    // @br-indexer: config height --> start
+    if self.height == 0 {
+      self.height = IndexerHeight::get_first_height(
+        self.index.settings.chain(),
+        self.index.settings.index_inscriptions(),
+        self.index.settings.first_inscription_height(),
+        self.index.settings.first_rune_height(),
+      );
+    }
+    // @br-indexer: config height --> end
 
     wtx
       .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
@@ -386,6 +397,9 @@ impl<'index> Updater<'index> {
     let mut sequence_number_to_satpoint = wtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
     let mut transaction_id_to_transaction = wtx.open_table(TRANSACTION_ID_TO_TRANSACTION)?;
+    let mut sequence_number_to_inscription_transfer =
+      wtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?; // @br-indexer
+    let mut sequence_number_to_rune_event = wtx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?; // @br-indexer
 
     let mut lost_sats = statistic_to_count
       .get(&Statistic::LostSats.key())?
@@ -414,6 +428,11 @@ impl<'index> Updater<'index> {
       .map(|(number, _id)| number.value() + 1)
       .unwrap_or(0);
 
+    let next_sequence_number_transfer =
+      IndexerFunction::get_next_sequence_number(sequence_number_to_inscription_transfer.iter()?);
+    let next_sequence_number_rune_event =
+      IndexerFunction::get_next_sequence_number(sequence_number_to_rune_event.iter()?);
+
     let home_inscription_count = home_inscriptions.len()?;
 
     let mut inscription_updater = InscriptionUpdater {
@@ -431,6 +450,8 @@ impl<'index> Updater<'index> {
       inscription_number_to_sequence_number: &mut inscription_number_to_sequence_number,
       lost_sats,
       next_sequence_number,
+      next_sequence_number_transfer,
+      sequence_number_to_inscription_transfer: &mut sequence_number_to_inscription_transfer,
       outpoint_to_value: &mut outpoint_to_value,
       reward: Height(self.height).subsidy(),
       sat_to_sequence_number: &mut sat_to_sequence_number,
@@ -591,6 +612,7 @@ impl<'index> Updater<'index> {
         .unwrap_or(0);
 
       let mut rune_updater = RuneUpdater {
+        chain: self.index.settings.chain(), // @br-indexer: config chain
         block_time: block.header.time,
         burned: HashMap::new(),
         client: &self.index.client,
@@ -607,6 +629,8 @@ impl<'index> Updater<'index> {
         sequence_number_to_rune_id: &mut sequence_number_to_rune_id,
         statistic_to_count: &mut statistic_to_count,
         transaction_id_to_rune: &mut transaction_id_to_rune,
+        sequence_number_to_rune_event: &mut sequence_number_to_rune_event, // @todo br-indexer: config sequence_number_to_rune_event
+        next_sequence_number_rune_event, // @todo br-indexer: config next_sequence_number_rune_event
       };
 
       for (i, (tx, txid)) in block.txdata.iter().enumerate() {

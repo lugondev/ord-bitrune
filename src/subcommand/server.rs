@@ -1,3 +1,16 @@
+use crate::indexer::{
+  inscription_entries::{
+    is_json_inscription_content, is_text_inscription_content_type, InscriptionEntry,
+    InscriptionInfo,
+  },
+  inscription_transfer::InscriptionTransfer,
+  rune_event::RuneEventEntry,
+};
+use crate::templates::{
+  InscriptionsEntriesJson, InscriptionsTransfersJson, RunesEventsJson, StatsUpdaterJson,
+};
+// @br-indexer: above
+
 use {
   self::{
     accept_encoding::AcceptEncoding,
@@ -57,6 +70,12 @@ enum SpawnConfig {
 #[derive(Deserialize)]
 struct Search {
   query: String,
+}
+
+// @br-indexer: pagination size
+#[derive(Deserialize)]
+struct Pagination {
+  size: Option<u32>,
 }
 
 #[derive(RustEmbed)]
@@ -254,6 +273,18 @@ impl Server {
         .route("/rune/:rune", get(Self::rune))
         .route("/runes", get(Self::runes))
         .route("/runes/balances", get(Self::runes_balances))
+        // @br-indexer: add router --> start
+        .route("/runes/events/:page", get(Self::runes_events))
+        .route(
+          "/inscriptions/entries/:page",
+          get(Self::inscriptions_entries_paginated),
+        )
+        .route(
+          "/inscriptions/transfers/:page",
+          get(Self::inscriptions_transfers),
+        )
+        .route("/stats", get(Self::stats_updater))
+        // @br-indexer: add router --> end
         .route("/sat/:sat", get(Self::sat))
         .route("/search", get(Self::search_by_query))
         .route("/search/*query", get(Self::search_by_path))
@@ -764,6 +795,185 @@ impl Server {
       })
     })
   }
+
+  // @br-indexer: add function for server --> start
+  async fn stats_updater(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let (total_runes_events, total_inscriptions, total_inscriptions_transfers) =
+        index.get_stats_updater()?;
+      Ok(
+        Json(StatsUpdaterJson {
+          network: server_config.chain.network(),
+          runes: u32::try_from(index.runes()?.len()).unwrap(),
+          inscriptions: total_inscriptions,
+          inscriptions_transfer: total_inscriptions_transfers,
+          runes_events: total_runes_events,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn inscriptions_entries_paginated(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(page_index): Path<u32>,
+    Query(pagination): Query<Pagination>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let page_size = pagination.size.unwrap_or(5000);
+      let mut data_size = 0;
+      let (inscriptions, total, more) =
+        index.get_inscriptions_entries_paginated(page_size, page_index)?;
+
+      let inscriptions_entries: Vec<(u32, Option<InscriptionEntry>)> = inscriptions
+        .into_iter()
+        .map(|(seq_no, inscription_id)| {
+          let info_result = Index::inscription_info(&index, query::Inscription::Id(inscription_id));
+          let mut entry: Option<InscriptionEntry> = None;
+
+          if info_result.is_ok() {
+            let info = info_result.unwrap();
+            if info.is_some() {
+              let info_unwrap = info.unwrap();
+              let mut body = None;
+              let content_length = info_unwrap.inscription.content_length().unwrap_or_default();
+              let is_json = is_json_inscription_content(
+                &info_unwrap.inscription.content_type,
+                &info_unwrap.inscription.body,
+              );
+              if content_length < 200 {
+                if is_json {
+                  body = Some(
+                    String::from_utf8(info_unwrap.inscription.body.unwrap_or_default())
+                      .unwrap_or_default(),
+                  );
+                } else if is_text_inscription_content_type(&info_unwrap.inscription.content_type) {
+                  let hex_string = hex::encode(info_unwrap.inscription.body.unwrap_or_default());
+                  body = Some(hex_string);
+                }
+              }
+              entry = Option::from(InscriptionEntry {
+                inscription_id,
+                seq_no: info_unwrap.entry.sequence_number,
+                inscription_no: info_unwrap.entry.inscription_number,
+                height: info_unwrap.entry.height,
+                fee: info_unwrap.entry.fee,
+                timestamp: info_unwrap.entry.timestamp,
+                network: server_config.chain.network(),
+                info: InscriptionInfo {
+                  body,
+                  content_encoding: String::from_utf8(
+                    info_unwrap.inscription.content_encoding.unwrap_or_default(),
+                  )
+                  .ok(),
+                  content_type: Some(
+                    String::from_utf8(info_unwrap.inscription.content_type.unwrap_or_default())
+                      .unwrap_or_default(),
+                  ),
+                  metadata: String::from_utf8(info_unwrap.inscription.metadata.unwrap_or_default())
+                    .ok(),
+                  metaprotocol: String::from_utf8(
+                    info_unwrap.inscription.metaprotocol.unwrap_or_default(),
+                  )
+                  .ok(),
+                  is_json,
+                  content_length,
+                },
+                outpoint: info_unwrap.satpoint.outpoint,
+              });
+            }
+          }
+          data_size += 1;
+          (seq_no, entry)
+        })
+        .collect();
+
+      Ok(
+        Json(InscriptionsEntriesJson {
+          entries: inscriptions_entries,
+          page_index,
+          more,
+          total,
+          page_size: data_size,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn runes_events(
+    Extension(index): Extension<Arc<Index>>,
+    Path(page_index): Path<u32>,
+    Query(pagination): Query<Pagination>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let page_size = pagination.size.unwrap_or(5000);
+      let mut data_size = 0;
+      let (runes_events, total, more) = index.get_runes_events_paginated(page_size, page_index)?;
+      let runes_events_map_address: Vec<(u32, String, RuneEventEntry)> = runes_events
+        .into_iter()
+        .map(|(seq_no, event)| {
+          data_size += 1;
+          let script_pk = event.script_pubkey.clone();
+          (seq_no, script_pk.to_hex_string(), event)
+        })
+        .collect();
+
+      Ok(
+        Json(RunesEventsJson {
+          events: runes_events_map_address,
+          total,
+          page_index,
+          page_size: data_size,
+          more,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn inscriptions_transfers(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(page_index): Path<u32>,
+    Query(pagination): Query<Pagination>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let page_size = pagination.size.unwrap_or(5000);
+      let mut data_size = 0;
+      let (transfers, total, more) =
+        index.get_inscriptions_transfers_paginated(page_size, page_index)?;
+      let transfers_map_address: Vec<(u32, String, InscriptionTransfer)> = transfers
+        .into_iter()
+        .map(|(inscription_id, transfer)| {
+          let mut address_output = String::new();
+          if let Ok(address) = server_config.chain.address_from_script(Script::from_bytes(
+            transfer.to_script_pubkey.clone().as_bytes(),
+          )) {
+            address_output = address.to_string();
+          }
+          data_size += 1;
+          (inscription_id, address_output.to_string(), transfer)
+        })
+        .collect();
+
+      Ok(
+        Json(InscriptionsTransfersJson {
+          transfers: transfers_map_address,
+          total,
+          page_index,
+          page_size: u32::try_from(data_size).unwrap(),
+          more,
+        })
+        .into_response(),
+      )
+    })
+  }
+  // @br-indexer: add function for server --> end
 
   async fn home(
     Extension(server_config): Extension<Arc<ServerConfig>>,

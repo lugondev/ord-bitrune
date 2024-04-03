@@ -8,6 +8,9 @@ pub(crate) use {
   collections::CollectionsHtml,
   home::HomeHtml,
   iframe::Iframe,
+  indexer::{
+    InscriptionsEntriesJson, InscriptionsTransfersJson, RunesEventsJson, StatsUpdaterJson,
+  },
   input::InputHtml,
   inscription::InscriptionHtml,
   inscriptions::InscriptionsHtml,
@@ -37,6 +40,7 @@ mod clock;
 pub mod collections;
 mod home;
 mod iframe;
+pub mod indexer;
 mod input;
 pub mod inscription;
 pub mod inscriptions;
