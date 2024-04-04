@@ -41,6 +41,7 @@ pub struct RuneEventEntry {
   pub event: RuneEvent,
   pub source: Txid,
   pub txid: Txid,
+  pub height: u32,
   pub script_pubkey: ScriptBuf,
   pub amount: u128,
   pub timestamp: u32,
@@ -52,6 +53,7 @@ pub(crate) type RuneEventEntryValue = (
   u8,                 // network
   u8,                 // event
   (u128, u128),       // source
+  u32,                // height
   (u128, u128),       // txid
   (u128, u128, u128), // script_pubkey
   u128,               // amount
@@ -69,6 +71,7 @@ impl Entry for RuneEventEntry {
       network,
       event,
       source,
+      height,
       txid,
       script_pubkey,
       amount,
@@ -98,6 +101,7 @@ impl Entry for RuneEventEntry {
           high[14], high[15],
         ])
       },
+      height,
       txid: {
         let low = txid.0.to_le_bytes();
         let high = txid.1.to_le_bytes();
@@ -138,6 +142,7 @@ impl Entry for RuneEventEntry {
           ]),
         )
       },
+      self.height,
       {
         let bytes = self.txid.to_byte_array();
         (

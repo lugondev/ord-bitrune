@@ -1824,7 +1824,7 @@ impl Index {
 
     let end = start.saturating_add(page_size);
 
-    let mut runes_events = sequence_number_to_inscriptions_transfers
+    let mut inscriptions_transfers = sequence_number_to_inscriptions_transfers
       .range(start..=end)?
       .rev()
       .map(|result| {
@@ -1832,13 +1832,13 @@ impl Index {
       })
       .collect::<Result<Vec<(u32, InscriptionTransfer)>, StorageError>>()?;
 
-    let more = u32::try_from(runes_events.len()).unwrap_or(u32::MAX) > page_size;
+    let more = u32::try_from(inscriptions_transfers.len()).unwrap_or(u32::MAX) > page_size;
 
     if more {
-      runes_events.remove(0);
+      inscriptions_transfers.remove(0);
     }
 
-    Ok((runes_events, total, more))
+    Ok((inscriptions_transfers, total, more))
   }
   // @br-indexer: add index function --> end
 
