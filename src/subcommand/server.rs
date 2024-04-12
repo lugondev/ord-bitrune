@@ -817,50 +817,41 @@ impl Server {
             if info.is_some() {
               let info_unwrap = info.unwrap();
               let mut body = None;
-              let content_length = info_unwrap.inscription.content_length().unwrap_or_default();
-              let is_json = is_json_inscription_content(
-                &info_unwrap.inscription.content_type,
-                &info_unwrap.inscription.body,
-              );
+              let content_length = info_unwrap.0.content_length.unwrap_or_default();
+              let is_json =
+                is_json_inscription_content(&info_unwrap.0.content_type, &info_unwrap.2.body);
               if content_length < 200 {
                 if is_json {
                   body = Some(
-                    String::from_utf8(info_unwrap.inscription.body.unwrap_or_default())
-                      .unwrap_or_default(),
+                    String::from_utf8(info_unwrap.2.body.unwrap_or_default()).unwrap_or_default(),
                   );
-                } else if is_text_inscription_content_type(&info_unwrap.inscription.content_type) {
-                  let hex_string = hex::encode(info_unwrap.inscription.body.unwrap_or_default());
+                } else if is_text_inscription_content_type(&info_unwrap.0.content_type) {
+                  let hex_string = hex::encode(info_unwrap.2.body.unwrap_or_default());
                   body = Some(hex_string);
                 }
               }
               entry = Option::from(InscriptionEntry {
                 inscription_id,
-                seq_no: info_unwrap.entry.sequence_number,
-                inscription_no: info_unwrap.entry.inscription_number,
-                height: info_unwrap.entry.height,
-                fee: info_unwrap.entry.fee,
-                timestamp: info_unwrap.entry.timestamp,
+                seq_no,
+                inscription_no: info_unwrap.0.number,
+                height: info_unwrap.0.height,
+                fee: info_unwrap.0.fee,
+                timestamp: info_unwrap.0.timestamp,
                 network: server_config.chain.network(),
                 info: InscriptionInfo {
                   body,
                   content_encoding: String::from_utf8(
-                    info_unwrap.inscription.content_encoding.unwrap_or_default(),
+                    info_unwrap.2.content_encoding.unwrap_or_default(),
                   )
                   .ok(),
-                  content_type: Some(
-                    String::from_utf8(info_unwrap.inscription.content_type.unwrap_or_default())
-                      .unwrap_or_default(),
-                  ),
-                  metadata: String::from_utf8(info_unwrap.inscription.metadata.unwrap_or_default())
+                  content_type: Some(info_unwrap.0.content_type.unwrap_or_default()),
+                  metadata: String::from_utf8(info_unwrap.2.metadata.unwrap_or_default()).ok(),
+                  metaprotocol: String::from_utf8(info_unwrap.2.metaprotocol.unwrap_or_default())
                     .ok(),
-                  metaprotocol: String::from_utf8(
-                    info_unwrap.inscription.metaprotocol.unwrap_or_default(),
-                  )
-                  .ok(),
                   is_json,
                   content_length,
                 },
-                outpoint: info_unwrap.satpoint.outpoint,
+                outpoint: info_unwrap.0.satpoint.outpoint,
               });
             }
           }
