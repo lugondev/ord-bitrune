@@ -58,7 +58,7 @@ pub(crate) use server_config::ServerConfig;
 mod accept_encoding;
 mod accept_json;
 mod error;
-pub(crate) mod query;
+pub mod query;
 mod server_config;
 
 enum SpawnConfig {
@@ -274,6 +274,7 @@ impl Server {
         .route("/rare.txt", get(Self::rare_txt))
         .route("/rune/:rune", get(Self::rune))
         .route("/runes", get(Self::runes))
+        .route("/runes/:page", get(Self::runes_paginated))
         .route("/runes/balances", get(Self::runes_balances))
         // @br-indexer: add router --> start
         .route("/runes/events/:page", get(Self::runes_events))
@@ -686,10 +687,13 @@ impl Server {
       }
 
       let rune = match rune_query {
-        query::Rune::SpacedRune(spaced_rune) => spaced_rune.rune,
-        query::Rune::RuneId(rune_id) => index
+        query::Rune::Spaced(spaced_rune) => spaced_rune.rune,
+        query::Rune::Id(rune_id) => index
           .get_rune_by_id(rune_id)?
           .ok_or_not_found(|| format!("rune {rune_id}"))?,
+        query::Rune::Number(number) => index
+          .get_rune_by_number(usize::try_from(number).unwrap())?
+          .ok_or_not_found(|| format!("rune number {number}"))?,
       };
 
       let (id, entry, parent) = index
@@ -724,17 +728,44 @@ impl Server {
   async fn runes(
     Extension(server_config): Extension<Arc<ServerConfig>>,
     Extension(index): Extension<Arc<Index>>,
+    accept_json: AcceptJson,
+  ) -> ServerResult<Response> {
+    Self::runes_paginated(
+      Extension(server_config),
+      Extension(index),
+      Path(0),
+      accept_json,
+    )
+    .await
+  }
+
+  async fn runes_paginated(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(page_index): Path<usize>,
     AcceptJson(accept_json): AcceptJson,
   ) -> ServerResult {
     task::block_in_place(|| {
+      let (entries, more) = index.runes_paginated(50, page_index)?;
+
+      let prev = page_index.checked_sub(1);
+
+      let next = more.then_some(page_index + 1);
+
       Ok(if accept_json {
-        Json(api::Runes {
-          entries: index.runes()?,
+        Json(RunesHtml {
+          entries,
+          more,
+          prev,
+          next,
         })
         .into_response()
       } else {
         RunesHtml {
-          entries: index.runes()?,
+          entries,
+          more,
+          prev,
+          next,
         }
         .page(server_config)
         .into_response()
@@ -2824,6 +2855,60 @@ mod tests {
   }
 
   #[test]
+  fn runes_can_be_queried_by_rune_number() {
+    let server = TestServer::builder()
+      .chain(Chain::Regtest)
+      .index_runes()
+      .build();
+
+    server.mine_blocks(1);
+
+    server.assert_response_regex("/rune/0", StatusCode::NOT_FOUND, ".*");
+
+    for i in 0..10 {
+      let rune = Rune(RUNE + i);
+      server.etch(
+        Runestone {
+          edicts: vec![Edict {
+            id: RuneId::default(),
+            amount: u128::MAX,
+            output: 0,
+          }],
+          etching: Some(Etching {
+            rune: Some(rune),
+            ..default()
+          }),
+          ..default()
+        },
+        1,
+        None,
+      );
+
+      server.mine_blocks(1);
+    }
+
+    server.assert_response_regex(
+      "/rune/0",
+      StatusCode::OK,
+      ".*<title>Rune AAAAAAAAAAAAA</title>.*",
+    );
+
+    for i in 1..6 {
+      server.assert_response_regex(
+        format!("/rune/{}", i),
+        StatusCode::OK,
+        ".*<title>Rune AAAAAAAAAAAA.*</title>.*",
+      );
+    }
+
+    server.assert_response_regex(
+      "/rune/9",
+      StatusCode::OK,
+      ".*<title>Rune AAAAAAAAAAAAJ</title>.*",
+    );
+  }
+
+  #[test]
   fn runes_are_displayed_on_runes_page() {
     let server = TestServer::builder()
       .chain(Chain::Regtest)
@@ -2835,7 +2920,7 @@ mod tests {
     server.assert_response_regex(
       "/runes",
       StatusCode::OK,
-      ".*<title>Runes</title>.*<h1>Runes</h1>\n<ul>\n</ul>.*",
+      ".*<title>Runes</title>.*<h1>Runes</h1>\n<ul>\n</ul>\n<div class=center>\n    prev\n      next\n  </div>.*",
     );
 
     let (txid, id) = server.etch(
@@ -3001,9 +3086,9 @@ mod tests {
       StatusCode::OK,
       ".*
 <dl>
-  .*
   <dt>rune</dt>
   <dd><a href=/rune/AAAAAAAAAAAAA>AAAAAAAAAAAAA</a></dd>
+  .*
 </dl>
 .*",
     );

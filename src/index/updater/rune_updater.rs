@@ -8,6 +8,7 @@ pub(super) struct RuneUpdater<'a, 'tx, 'client> {
   pub(super) block_time: u32,
   pub(super) burned: HashMap<RuneId, Lot>,
   pub(super) client: &'client Client,
+  pub(super) event_sender: Option<&'a Sender<Event>>,
   pub(super) height: u32,
   pub(super) id_to_entry: &'a mut Table<'tx, RuneIdValue, RuneEntryValue>,
   pub(super) inscription_id_to_sequence_number: &'a Table<'tx, InscriptionIdValue, u32>,
@@ -20,13 +21,13 @@ pub(super) struct RuneUpdater<'a, 'tx, 'client> {
   pub(super) transaction_id_to_rune: &'a mut Table<'tx, &'static TxidValue, u128>,
 }
 
-// @br-indexer - create rune event --> start
+// @todo br-indexer - create rune event --> start
 pub fn rune_event(rune_actions: &mut HashMap<RuneId, RuneEvent>, id: RuneId, event: RuneEvent) {
   if rune_actions.entry(id).or_insert(RuneEvent::Mint).to_u8() == 0 {
     rune_actions.insert(id, event);
   }
 }
-// @br-indexer - create rune event --> end
+// @todo br-indexer - create rune event --> end
 
 impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
   pub(super) fn index_runes(&mut self, tx_index: u32, tx: &Transaction, txid: Txid) -> Result<()> {
@@ -42,6 +43,15 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       if let Some(id) = artifact.mint() {
         if let Some(amount) = self.mint(id)? {
           *unallocated.entry(id).or_default() += amount;
+
+          if let Some(sender) = self.event_sender {
+            sender.blocking_send(Event::RuneMinted {
+              block_height: self.height,
+              txid,
+              rune_id: id,
+              amount: amount.n(),
+            })?;
+          }
         }
       }
 
@@ -193,9 +203,14 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       // Sort balances by id so tests can assert balances in a fixed order
       balances.sort();
 
+      let outpoint = OutPoint {
+        txid,
+        vout: vout.try_into().unwrap(),
+      };
+
       for (id, balance) in balances {
         Index::encode_rune_balance(id, balance.n(), &mut buffer);
-        // @br-indexer - new output --> start
+        // @todo br-indexer - new output --> start
         let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
         self.next_sequence_number_rune_event += 1;
         self.sequence_number_to_rune_event.insert(
@@ -214,26 +229,40 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           }
           .store(),
         )?;
-        // @br-indexer - new output --> end
+        // @todo br-indexer - new output --> end
+
+        if let Some(sender) = self.event_sender {
+          sender.blocking_send(Event::RuneTransferred {
+            outpoint,
+            block_height: self.height,
+            txid,
+            rune_id: id,
+            amount: balance.0,
+          })?;
+        }
       }
 
-      self.outpoint_to_balances.insert(
-        &OutPoint {
-          txid,
-          vout: vout.try_into().unwrap(),
-        }
-        .store(),
-        buffer.as_slice(),
-      )?;
+      self
+        .outpoint_to_balances
+        .insert(&outpoint.store(), buffer.as_slice())?;
     }
 
     // increment entries with burned runes
     for (id, amount) in burned {
       *self.burned.entry(id).or_default() += amount;
-      // @br-indexer burn rune --> end
+
+      if let Some(sender) = self.event_sender {
+        sender.blocking_send(Event::RuneBurned {
+          block_height: self.height,
+          txid,
+          rune_id: id,
+          amount: amount.n(),
+        })?;
+      }
+      // @todo br-indexer burn rune --> end
+      let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+      self.next_sequence_number_rune_event += 1;
       if rune_inputs.entry(id).or_default().is_empty() {
-        let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
-        self.next_sequence_number_rune_event += 1;
         self.sequence_number_to_rune_event.insert(
           next_sequence_number_rune_event,
           &RuneEventEntry {
@@ -252,12 +281,10 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         )?;
       } else {
         for input in rune_inputs.entry(id).or_default().iter() {
-          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
-          self.next_sequence_number_rune_event += 1;
           self.sequence_number_to_rune_event.insert(
             next_sequence_number_rune_event,
             &RuneEventEntry {
-              rune_id: RuneId::try_from(id).unwrap(),
+              rune_id: id,
               network: self.chain.network(),
               event: RuneEvent::Burn,
               source: txid,
@@ -272,7 +299,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           )?;
         }
       }
-      // br-indexer --> end
+      // @todo br-indexer --> end
     }
 
     Ok(())
@@ -354,6 +381,14 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     };
 
     self.id_to_entry.insert(id.store(), entry.store())?;
+
+    if let Some(sender) = self.event_sender {
+      sender.blocking_send(Event::RuneEtched {
+        block_height: self.height,
+        txid,
+        rune_id: id,
+      })?;
+    }
 
     let inscription_id = InscriptionId { txid, index: 0 };
 
@@ -528,7 +563,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           i += len;
           *unallocated.entry(id).or_default() += balance;
 
-          // @br-indexer - new input --> start
+          // @todo br-indexer - new input --> start
           rune_inputs
             .entry(id)
             .or_default()
@@ -553,7 +588,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             }
             .store(),
           )?;
-          // @br-indexer - new input --> end
+          // @todo br-indexer - new input --> end
         }
       }
     }

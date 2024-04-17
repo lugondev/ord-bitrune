@@ -613,6 +613,7 @@ impl<'index> Updater<'index> {
 
       let mut rune_updater = RuneUpdater {
         chain: self.index.settings.chain(), // @br-indexer: config chain
+        event_sender: self.index.event_sender.as_ref(),
         block_time: block.header.time,
         burned: HashMap::new(),
         client: &self.index.client,
