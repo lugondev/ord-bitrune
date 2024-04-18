@@ -323,7 +323,6 @@ mod tests {
     println!("{:?}", r);
   }
 
-
   #[test]
   fn deciphering_transaction_with_no_outputs_returns_none() {
     assert_eq!(

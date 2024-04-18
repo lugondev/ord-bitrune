@@ -22,11 +22,11 @@ pub(super) struct RuneUpdater<'a, 'tx, 'client> {
 }
 
 // @todo br-indexer - create rune event --> start
-pub fn rune_event(rune_actions: &mut HashMap<RuneId, RuneEvent>, id: RuneId, event: RuneEvent) {
-  if rune_actions.entry(id).or_insert(RuneEvent::Mint).to_u8() == 0 {
-    rune_actions.insert(id, event);
-  }
-}
+// pub fn rune_event(rune_actions: &mut HashMap<RuneId, RuneEvent>, id: RuneId, event: RuneEvent) {
+//   if rune_actions.entry(id).or_insert(RuneEvent::Mint).to_u8() == 0 {
+//     rune_actions.insert(id, event);
+//   }
+// }
 // @todo br-indexer - create rune event --> end
 
 impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
@@ -35,7 +35,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
 
     let mut rune_actions: HashMap<RuneId, RuneEvent> = HashMap::new(); // @br-indexer
     let mut rune_inputs: HashMap<RuneId, Vec<OutPoint>> = HashMap::new(); // @br-indexer
-    let mut unallocated = self.unallocated(tx, txid, &mut rune_actions, &mut rune_inputs)?;
+    let mut unallocated = self.unallocated(tx, &mut rune_inputs)?;
 
     let mut allocated: Vec<HashMap<RuneId, Lot>> = vec![HashMap::new(); tx.output.len()];
 
@@ -43,6 +43,35 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       if let Some(id) = artifact.mint() {
         if let Some(amount) = self.mint(id)? {
           *unallocated.entry(id).or_default() += amount;
+
+          log::info!(
+            "Rune Minted: {:?} amount {:?} at {:?}:{:?}",
+            id.to_string(),
+            amount.n(),
+            txid,
+            tx_index
+          );
+          // @todo br-indexer - new input --> start
+          // rune_actions.insert(id, RuneEvent::Mint);
+          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+          self.next_sequence_number_rune_event += 1;
+          self.sequence_number_to_rune_event.insert(
+            next_sequence_number_rune_event,
+            &RuneEventEntry {
+              rune_id: id,
+              network: self.chain.network(),
+              event: RuneEvent::Mint,
+              source: txid,
+              height: self.height,
+              txid,
+              script_pubkey: ScriptBuf::default(),
+              amount: amount.n(),
+              vout: i32::try_from(tx_index).unwrap(),
+              timestamp: self.block_time,
+            }
+            .store(),
+          )?;
+          // @todo br-indexer - new input --> end
 
           if let Some(sender) = self.event_sender {
             sender.blocking_send(Event::RuneMinted {
@@ -213,6 +242,13 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       for (id, balance) in balances {
         Index::encode_rune_balance(id, balance.n(), &mut buffer);
         // @todo br-indexer - new output --> start
+        log::info!(
+          "Rune Transfer: {:?} amount {:?} at {:?}:{:?}",
+          id.to_string(),
+          balance.n(),
+          txid,
+          tx_index
+        );
         let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
         self.next_sequence_number_rune_event += 1;
         self.sequence_number_to_rune_event.insert(
@@ -220,7 +256,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           &RuneEventEntry {
             rune_id: id,
             network: self.chain.network(),
-            event: *rune_actions.entry(id).or_insert(RuneEvent::Mint),
+            event: RuneEvent::Transfer,
             height: self.height,
             txid,
             source: txid,
@@ -545,8 +581,6 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
   fn unallocated(
     &mut self,
     tx: &Transaction,
-    txid: Txid,
-    rune_actions: &mut HashMap<RuneId, RuneEvent>,
     rune_inputs: &mut HashMap<RuneId, Vec<OutPoint>>,
   ) -> Result<HashMap<RuneId, Lot>> {
     // map of rune ID to un-allocated balance of that rune
@@ -571,20 +605,19 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             .or_default()
             .push(input.previous_output);
 
-          rune_event(rune_actions, id, RuneEvent::Transfer);
           let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
           self.next_sequence_number_rune_event += 1;
           self.sequence_number_to_rune_event.insert(
             next_sequence_number_rune_event,
             &RuneEventEntry {
-              rune_id: RuneId::try_from(id).unwrap(),
+              rune_id: id,
               network: self.chain.network(),
               event: RuneEvent::Used,
-              source: txid,
+              source: tx.txid(),
               height: self.height,
               txid: input.previous_output.txid,
               script_pubkey: ScriptBuf::default(),
-              amount: balance,
+              amount: 0,
               vout: i32::try_from(input.previous_output.vout).unwrap(),
               timestamp: self.block_time,
             }

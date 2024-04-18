@@ -732,6 +732,7 @@ impl Server {
       Extension(server_config),
       Extension(index),
       Path(0),
+      Query(Pagination { size: Some(50) }),
       accept_json,
     )
     .await
@@ -741,10 +742,13 @@ impl Server {
     Extension(server_config): Extension<Arc<ServerConfig>>,
     Extension(index): Extension<Arc<Index>>,
     Path(page_index): Path<usize>,
+    Query(pagination): Query<Pagination>,
     AcceptJson(accept_json): AcceptJson,
   ) -> ServerResult {
     task::block_in_place(|| {
-      let (entries, more) = index.runes_paginated(50, page_index)?;
+      let page_size = pagination.size.unwrap_or(50).min(1000);
+      let (entries, more) =
+        index.runes_paginated(usize::try_from(page_size).unwrap(), page_index)?;
 
       let prev = page_index.checked_sub(1);
 

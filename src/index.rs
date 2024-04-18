@@ -955,7 +955,9 @@ impl Index {
     }
 
     let more = entries.len() > page_size;
-
+    if more {
+      entries.pop();
+    }
     Ok((entries, more))
   }
 
