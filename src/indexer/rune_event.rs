@@ -11,7 +11,6 @@ pub enum RuneEvent {
   Mint,
   Transfer,
   Burn,
-  Used,
 }
 
 impl RuneEvent {
@@ -20,7 +19,7 @@ impl RuneEvent {
       0 => RuneEvent::Mint,
       1 => RuneEvent::Transfer,
       2 => RuneEvent::Burn,
-      _ => RuneEvent::Used,
+      _ => RuneEvent::Transfer,
     }
   }
 
@@ -29,7 +28,6 @@ impl RuneEvent {
       RuneEvent::Mint => 0,
       RuneEvent::Transfer => 1,
       RuneEvent::Burn => 2,
-      RuneEvent::Used => 3,
     }
   }
 }
