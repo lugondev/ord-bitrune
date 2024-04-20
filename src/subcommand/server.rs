@@ -274,6 +274,7 @@ impl Server {
         .route("/rune/:rune", get(Self::rune))
         .route("/runes", get(Self::runes))
         .route("/runes/:page", get(Self::runes_paginated))
+        .route("/runes/balances", get(Self::runes_balances))
         // @br-indexer: add router --> start
         .route("/runes/events/:page", get(Self::runes_events))
         .route(
@@ -771,6 +772,34 @@ impl Server {
         }
         .page(server_config)
         .into_response()
+      })
+    })
+  }
+
+  async fn runes_balances(
+    Extension(index): Extension<Arc<Index>>,
+    AcceptJson(accept_json): AcceptJson,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      Ok(if accept_json {
+        Json(
+          index
+            .get_rune_balance_map()?
+            .into_iter()
+            .map(|(rune, balances)| {
+              (
+                rune,
+                balances
+                  .into_iter()
+                  .map(|(outpoint, pile)| (outpoint, pile.amount))
+                  .collect(),
+              )
+            })
+            .collect::<BTreeMap<SpacedRune, BTreeMap<OutPoint, u128>>>(),
+        )
+        .into_response()
+      } else {
+        StatusCode::NOT_FOUND.into_response()
       })
     })
   }
@@ -2752,6 +2781,14 @@ mod tests {
   }
 
   #[test]
+  fn html_runes_balances_not_found() {
+    TestServer::builder()
+      .chain(Chain::Regtest)
+      .build()
+      .assert_response("/runes/balances", StatusCode::NOT_FOUND, "");
+  }
+
+  #[test]
   fn fallback() {
     let server = TestServer::new();
 
@@ -3038,6 +3075,8 @@ mod tests {
   <dd>340282366920938463463374607431768211455\u{A0}%</dd>
   <dt>premine</dt>
   <dd>340282366920938463463374607431768211455\u{A0}%</dd>
+  <dt>premine percentage</dt>
+  <dd>100%</dd>
   <dt>burned</dt>
   <dd>0\u{A0}%</dd>
   <dt>divisibility</dt>
