@@ -275,8 +275,8 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       }
       // @todo br-indexer burn rune --> end
       let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
-      self.next_sequence_number_rune_event += 1;
       if rune_inputs.entry(id).or_default().is_empty() {
+        self.next_sequence_number_rune_event += 1;
         self.sequence_number_to_rune_event.insert(
           next_sequence_number_rune_event,
           &RuneEventEntry {
@@ -295,6 +295,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         )?;
       } else {
         for input in rune_inputs.entry(id).or_default().iter() {
+          self.next_sequence_number_rune_event += 1;
           self.sequence_number_to_rune_event.insert(
             next_sequence_number_rune_event,
             &RuneEventEntry {
@@ -580,6 +581,25 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             .entry(id)
             .or_default()
             .push(input.previous_output);
+
+          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
+          self.next_sequence_number_rune_event += 1;
+          self.sequence_number_to_rune_event.insert(
+            next_sequence_number_rune_event,
+            &RuneEventEntry {
+              rune_id: id,
+              network: self.chain.network(),
+              event: RuneEvent::Used,
+              source: tx.txid(),
+              height: self.height,
+              txid: input.previous_output.txid,
+              script_pubkey: ScriptBuf::default(),
+              amount: 0,
+              vout: i32::try_from(input.previous_output.vout).unwrap(),
+              timestamp: self.block_time,
+            }
+            .store(),
+          )?;
         }
       }
     }

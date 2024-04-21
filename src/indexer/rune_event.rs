@@ -11,6 +11,7 @@ pub enum RuneEvent {
   Mint,
   Transfer,
   Burn,
+  Used,
 }
 
 impl RuneEvent {
@@ -19,7 +20,7 @@ impl RuneEvent {
       0 => RuneEvent::Mint,
       1 => RuneEvent::Transfer,
       2 => RuneEvent::Burn,
-      _ => RuneEvent::Transfer,
+      _ => RuneEvent::Used,
     }
   }
 
@@ -28,6 +29,7 @@ impl RuneEvent {
       RuneEvent::Mint => 0,
       RuneEvent::Transfer => 1,
       RuneEvent::Burn => 2,
+      RuneEvent::Used => 3,
     }
   }
 }
@@ -42,6 +44,20 @@ pub struct RuneEventEntry {
   pub height: u32,
   pub script_pubkey: ScriptBuf,
   pub amount: u128,
+  pub timestamp: u32,
+  pub vout: i32,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+pub struct RuneEventResponse {
+  pub rune_id: RuneId,
+  pub network: Network,
+  pub event: RuneEvent,
+  pub source: Txid,
+  pub txid: Txid,
+  pub height: u32,
+  pub script_pubkey: ScriptBuf,
+  pub amount: String,
   pub timestamp: u32,
   pub vout: i32,
 }

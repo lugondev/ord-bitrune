@@ -1,11 +1,11 @@
 use super::*;
 use crate::indexer::inscription_entries::InscriptionEntry;
 use crate::indexer::inscription_transfer::InscriptionTransfer;
-use crate::indexer::rune_event::RuneEventEntry;
+use crate::indexer::rune_event::RuneEventResponse;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunesEventsJson {
-  pub events: Vec<(u32, String, RuneEventEntry)>,
+  pub events: Vec<(u32, String, RuneEventResponse)>,
   pub total: u32,
   pub page_index: u32,
   pub page_size: u32,

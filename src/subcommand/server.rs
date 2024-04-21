@@ -4,7 +4,7 @@ use crate::indexer::{
     InscriptionInfo,
   },
   inscription_transfer::InscriptionTransfer,
-  rune_event::RuneEventEntry,
+  rune_event::RuneEventResponse,
 };
 use crate::templates::{
   InscriptionsEntriesJson, InscriptionsTransfersJson, RunesEventsJson, StatsUpdaterJson,
@@ -913,12 +913,27 @@ impl Server {
       let page_size = pagination.size.unwrap_or(5000);
       let mut data_size = 0;
       let (runes_events, total, more) = index.get_runes_events_paginated(page_size, page_index)?;
-      let runes_events_map_address: Vec<(u32, String, RuneEventEntry)> = runes_events
+      let runes_events_map_address: Vec<(u32, String, RuneEventResponse)> = runes_events
         .into_iter()
         .map(|(seq_no, event)| {
           data_size += 1;
           let script_pk = event.script_pubkey.clone();
-          (seq_no, script_pk.to_hex_string(), event)
+          (
+            seq_no,
+            script_pk.to_hex_string(),
+            RuneEventResponse {
+              rune_id: event.rune_id,
+              network: event.network,
+              event: event.event,
+              source: event.txid,
+              height: event.height,
+              txid: event.txid,
+              script_pubkey: event.script_pubkey,
+              amount: event.amount.to_string(),
+              vout: event.vout,
+              timestamp: event.timestamp,
+            },
+          )
         })
         .collect();
 

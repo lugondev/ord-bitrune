@@ -20,6 +20,11 @@ impl IndexerHeight {
         height = 188710; // first signet block which has rune
       }
       return height;
+    } else if chain == Chain::Mainnet {
+      if !index_inscriptions {
+        height = 840000; // first mainnet block which has rune
+      }
+      return height;
     }
     if !index_inscriptions {
       height = first_rune;
