@@ -274,8 +274,8 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         })?;
       }
       // @todo br-indexer burn rune --> end
-      let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
       if rune_inputs.entry(id).or_default().is_empty() {
+        let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
         self.next_sequence_number_rune_event += 1;
         self.sequence_number_to_rune_event.insert(
           next_sequence_number_rune_event,
@@ -295,6 +295,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         )?;
       } else {
         for input in rune_inputs.entry(id).or_default().iter() {
+          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
           self.next_sequence_number_rune_event += 1;
           self.sequence_number_to_rune_event.insert(
             next_sequence_number_rune_event,
