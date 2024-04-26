@@ -1,9 +1,3 @@
-use crate::indexer::{
-  function::IndexerFunction,
-  inscription_transfer::{InscriptionTransfer, InscriptionTransferValue},
-  rune_event::{RuneEventEntry, RuneEventEntryValue},
-};
-
 use {
   self::{
     entry::{
@@ -39,6 +33,13 @@ use {
     io::{BufWriter, Write},
     sync::Once,
   },
+};
+
+use crate::indexer::rune_event::{BlockId, BlockIdValue};
+use crate::indexer::{
+  function::IndexerFunction,
+  inscription_transfer::{InscriptionTransfer, InscriptionTransferValue},
+  rune_event::{RuneEventEntry, RuneEventEntryValue},
 };
 
 pub use self::entry::RuneEntry;
@@ -79,7 +80,7 @@ define_table! { TRANSACTION_ID_TO_RUNE, &TxidValue, u128 }
 define_table! { TRANSACTION_ID_TO_TRANSACTION, &TxidValue, &[u8] }
 define_table! { WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP, u32, u128 }
 define_table! { SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER, u32, InscriptionTransferValue } // @todo: br-indexer: add this table
-define_table! { SEQUENCE_NUMBER_TO_RUNE_EVENT, u32, RuneEventEntryValue } // @todo: br-indexer: add this table
+define_table! { BLOCK_ID_TO_RUNE_EVENT, BlockIdValue, RuneEventEntryValue } // @todo: br-indexer: add this table
 
 #[derive(Copy, Clone)]
 pub(crate) enum Statistic {
@@ -286,8 +287,7 @@ impl Index {
                 "index at `{}` appears to have been built with a newer, incompatible version of ord, consider updating ord: index schema {schema_version}, ord schema {SCHEMA_VERSION}",
                 path.display()
               ),
-            cmp::Ordering::Equal => {
-            }
+            cmp::Ordering::Equal => {}
           }
         }
 
@@ -324,7 +324,7 @@ impl Index {
         tx.open_table(TRANSACTION_ID_TO_RUNE)?;
         tx.open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?;
         tx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?; // @br-indexer: add this table
-        tx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?; // @br-indexer: add this table
+        tx.open_table(BLOCK_ID_TO_RUNE_EVENT)?; // @br-indexer: add this table
 
         {
           let mut outpoint_to_sat_ranges = tx.open_table(OUTPOINT_TO_SAT_RANGES)?;
@@ -1754,21 +1754,20 @@ impl Index {
   }
 
   // @br-indexer: add index function --> start
-  pub(crate) fn get_stats_updater(&self) -> Result<(u32, u32, u32)> {
+  pub(crate) fn get_stats_updater(&self) -> Result<(u64, u32, u32)> {
     let rtx = self.database.begin_read()?;
 
     let sequence_number_to_inscription_entry =
       rtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY)?;
     let sequence_number_to_inscriptions_transfers =
       rtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?;
-    let sequence_number_to_rune_event_entry = rtx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?;
+    let block_id_to_rune_event_entry = rtx.open_table(BLOCK_ID_TO_RUNE_EVENT)?;
 
     let total_inscriptions =
       IndexerFunction::count_seq_data(sequence_number_to_inscription_entry.iter()?);
     let total_inscriptions_transfers =
       IndexerFunction::count_seq_data(sequence_number_to_inscriptions_transfers.iter()?);
-    let total_runes_events =
-      IndexerFunction::count_seq_data(sequence_number_to_rune_event_entry.iter()?);
+    let total_runes_events = block_id_to_rune_event_entry.len().unwrap_or(0);
 
     Ok((
       total_runes_events,
@@ -1812,33 +1811,35 @@ impl Index {
 
   pub(crate) fn get_runes_events_paginated(
     &self,
-    page_size: u32,
-    page_index: u32,
-  ) -> Result<(Vec<(u32, RuneEventEntry)>, u32, bool)> {
+    block_height: u64,
+  ) -> Result<(Vec<(BlockId, RuneEventEntry)>, u64)> {
     let rtx = self.database.begin_read()?;
-    let sequence_number_to_rune_event_entry = rtx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?;
+    let block_id_to_rune_event_entry = rtx.open_table(BLOCK_ID_TO_RUNE_EVENT)?;
+    let total = block_id_to_rune_event_entry.len().unwrap_or(0);
 
-    let total = IndexerFunction::count_seq_data(sequence_number_to_rune_event_entry.iter()?);
+    let min_id = BlockId {
+      block: block_height,
+      index: 0,
+    };
 
-    let start = page_size.saturating_mul(page_index);
+    let max_id = BlockId {
+      block: block_height,
+      index: u32::MAX,
+    };
 
-    let end = start.saturating_add(page_size);
-
-    let mut runes_events = sequence_number_to_rune_event_entry
-      .range(start..=end)?
-      .rev()
+    let runes_events = block_id_to_rune_event_entry
+      .range(min_id.store()..=max_id.store())?
       .map(|result| {
-        result.map(|(number, entry)| (number.value(), RuneEventEntry::load(entry.value())))
+        result.map(|(id, entry)| {
+          (
+            BlockId::load(id.value()),
+            RuneEventEntry::load(entry.value()),
+          )
+        })
       })
-      .collect::<Result<Vec<(u32, RuneEventEntry)>, StorageError>>()?;
+      .collect::<Result<Vec<(BlockId, RuneEventEntry)>, StorageError>>()?;
 
-    let more = u32::try_from(runes_events.len()).unwrap_or(u32::MAX) > page_size;
-
-    if more {
-      runes_events.remove(0);
-    }
-
-    Ok((runes_events, total, more))
+    Ok((runes_events, total))
   }
 
   pub(crate) fn get_inscriptions_transfers_paginated(
@@ -3570,7 +3571,7 @@ mod tests {
           .index
           .get_inscriptions_on_output(OutPoint {
             txid: first,
-            vout: 0
+            vout: 0,
           })
           .unwrap(),
         [inscription_id]
@@ -3616,7 +3617,7 @@ mod tests {
         .index
         .get_inscription_by_id(InscriptionId {
           txid: second,
-          index: 0
+          index: 0,
         })
         .unwrap()
         .is_some());
@@ -3625,7 +3626,7 @@ mod tests {
         .index
         .get_inscription_by_id(InscriptionId {
           txid: second,
-          index: 0
+          index: 0,
         })
         .unwrap()
         .is_some());
@@ -4444,7 +4445,7 @@ mod tests {
         vec![
           cursed,
           reinscription_on_cursed,
-          second_reinscription_on_cursed
+          second_reinscription_on_cursed,
         ],
         context
           .index
@@ -4560,7 +4561,7 @@ mod tests {
           .index
           .get_inscriptions_on_output_with_satpoints(OutPoint {
             txid: final_txid,
-            vout: 0
+            vout: 0,
           })
           .unwrap()
       )
@@ -6458,9 +6459,9 @@ mod tests {
         location: Some(SatPoint {
           outpoint: OutPoint {
             txid: create_txid,
-            vout: 0
+            vout: 0,
           },
-          offset: 0
+          offset: 0,
         }),
         sequence_number: 0,
         block_height: 2,
@@ -6488,16 +6489,16 @@ mod tests {
         new_location: SatPoint {
           outpoint: OutPoint {
             txid: transfer_txid,
-            vout: 0
+            vout: 0,
           },
-          offset: 0
+          offset: 0,
         },
         old_location: SatPoint {
           outpoint: OutPoint {
             txid: create_txid,
-            vout: 0
+            vout: 0,
           },
-          offset: 0
+          offset: 0,
         },
         sequence_number: 0,
       }

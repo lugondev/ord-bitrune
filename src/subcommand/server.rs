@@ -52,6 +52,7 @@ use {
   },
 };
 
+use crate::indexer::rune_event::BlockId;
 pub(crate) use server_config::ServerConfig;
 
 mod accept_encoding;
@@ -825,6 +826,7 @@ impl Server {
       Ok(
         Json(StatsUpdaterJson {
           network: server_config.chain.network(),
+          height: index.block_count().unwrap(),
           runes: u32::try_from(index.runes()?.len()).unwrap(),
           inscriptions: total_inscriptions,
           inscriptions_transfer: total_inscriptions_transfers,
@@ -916,21 +918,17 @@ impl Server {
 
   async fn runes_events(
     Extension(index): Extension<Arc<Index>>,
-    Path(page_index): Path<u32>,
-    Query(pagination): Query<Pagination>,
+    Path(height): Path<u64>,
   ) -> ServerResult<Response> {
     task::block_in_place(|| {
-      let page_size = pagination.size.unwrap_or(5000);
       let mut data_size = 0;
-      let (runes_events, total, more) = index.get_runes_events_paginated(page_size, page_index)?;
-      let runes_events_map_address: Vec<(u32, String, RuneEventResponse)> = runes_events
+      let (runes_events, total) = index.get_runes_events_paginated(height)?;
+      let runes_events_map_address: Vec<(BlockId, RuneEventResponse)> = runes_events
         .into_iter()
-        .map(|(seq_no, event)| {
+        .map(|(block_id, event)| {
           data_size += 1;
-          let script_pk = event.script_pubkey.clone();
           (
-            seq_no,
-            script_pk.to_hex_string(),
+            block_id,
             RuneEventResponse {
               rune_id: event.rune_id,
               network: event.network,
@@ -951,9 +949,8 @@ impl Server {
         Json(RunesEventsJson {
           events: runes_events_map_address,
           total,
-          page_index,
-          page_size: data_size,
-          more,
+          block: height,
+          size: data_size,
         })
         .into_response(),
       )

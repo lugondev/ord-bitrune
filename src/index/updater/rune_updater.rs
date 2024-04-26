@@ -1,10 +1,11 @@
 use super::*;
-use crate::indexer::rune_event::{RuneEvent, RuneEventEntry, RuneEventEntryValue};
+use crate::indexer::rune_event::{
+  BlockId, BlockIdValue, RuneEvent, RuneEventEntry, RuneEventEntryValue,
+};
 
 pub(super) struct RuneUpdater<'a, 'tx, 'client> {
   pub(super) chain: Chain,
-  pub(super) sequence_number_to_rune_event: &'a mut Table<'tx, u32, RuneEventEntryValue>,
-  pub(super) next_sequence_number_rune_event: u32,
+  pub(super) block_id_to_rune_event: &'a mut Table<'tx, BlockIdValue, RuneEventEntryValue>,
   pub(super) block_time: u32,
   pub(super) burned: HashMap<RuneId, Lot>,
   pub(super) client: &'client Client,
@@ -22,11 +23,17 @@ pub(super) struct RuneUpdater<'a, 'tx, 'client> {
 }
 
 impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
-  pub(super) fn index_runes(&mut self, tx_index: u32, tx: &Transaction, txid: Txid) -> Result<()> {
+  pub(super) fn index_runes(
+    &mut self,
+    tx_index: u32,
+    tx: &Transaction,
+    txid: Txid,
+    block_index: &mut u32,
+  ) -> Result<()> {
     let artifact = Runestone::decipher(tx);
 
     let mut rune_inputs: HashMap<RuneId, Vec<OutPoint>> = HashMap::new(); // @br-indexer
-    let mut unallocated = self.unallocated(tx, &mut rune_inputs)?;
+    let mut unallocated = self.unallocated(tx, &mut rune_inputs, block_index)?;
 
     let mut allocated: Vec<HashMap<RuneId, Lot>> = vec![HashMap::new(); tx.output.len()];
 
@@ -36,10 +43,12 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           *unallocated.entry(id).or_default() += amount;
 
           // @todo br-indexer - new input --> start
-          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
-          self.next_sequence_number_rune_event += 1;
-          self.sequence_number_to_rune_event.insert(
-            next_sequence_number_rune_event,
+          self.block_id_to_rune_event.insert(
+            &BlockId {
+              block: self.height.into(),
+              index: block_index.saturating_add(1),
+            }
+            .store(),
             &RuneEventEntry {
               rune_id: id,
               network: self.chain.network(),
@@ -54,6 +63,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             }
             .store(),
           )?;
+          *block_index += 1;
           // @todo br-indexer - new input --> end
 
           if let Some(sender) = self.event_sender {
@@ -225,10 +235,12 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         Index::encode_rune_balance(id, balance.n(), &mut buffer);
 
         // @todo br-indexer - new output --> start
-        let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
-        self.next_sequence_number_rune_event += 1;
-        self.sequence_number_to_rune_event.insert(
-          next_sequence_number_rune_event,
+        self.block_id_to_rune_event.insert(
+          &BlockId {
+            block: self.height.into(),
+            index: block_index.saturating_add(1),
+          }
+          .store(),
           &RuneEventEntry {
             rune_id: id,
             network: self.chain.network(),
@@ -243,6 +255,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           }
           .store(),
         )?;
+        *block_index += 1;
         // @todo br-indexer - new output --> end
 
         if let Some(sender) = self.event_sender {
@@ -275,10 +288,12 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       }
       // @todo br-indexer burn rune --> end
       if rune_inputs.entry(id).or_default().is_empty() {
-        let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
-        self.next_sequence_number_rune_event += 1;
-        self.sequence_number_to_rune_event.insert(
-          next_sequence_number_rune_event,
+        self.block_id_to_rune_event.insert(
+          &BlockId {
+            block: self.height.into(),
+            index: block_index.saturating_add(1),
+          }
+          .store(),
           &RuneEventEntry {
             rune_id: id,
             network: self.chain.network(),
@@ -293,12 +308,15 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           }
           .store(),
         )?;
+        *block_index += 1;
       } else {
         for input in rune_inputs.entry(id).or_default().iter() {
-          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
-          self.next_sequence_number_rune_event += 1;
-          self.sequence_number_to_rune_event.insert(
-            next_sequence_number_rune_event,
+          self.block_id_to_rune_event.insert(
+            &BlockId {
+              block: self.height.into(),
+              index: block_index.saturating_add(1),
+            }
+            .store(),
             &RuneEventEntry {
               rune_id: id,
               network: self.chain.network(),
@@ -313,6 +331,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             }
             .store(),
           )?;
+          *block_index += 1;
         }
       }
       // @todo br-indexer --> end
@@ -560,6 +579,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     &mut self,
     tx: &Transaction,
     rune_inputs: &mut HashMap<RuneId, Vec<OutPoint>>,
+    block_index: &mut u32,
   ) -> Result<HashMap<RuneId, Lot>> {
     // map of rune ID to un-allocated balance of that rune
     let mut unallocated: HashMap<RuneId, Lot> = HashMap::new();
@@ -583,10 +603,12 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             .or_default()
             .push(input.previous_output);
 
-          let next_sequence_number_rune_event = self.next_sequence_number_rune_event;
-          self.next_sequence_number_rune_event += 1;
-          self.sequence_number_to_rune_event.insert(
-            next_sequence_number_rune_event,
+          self.block_id_to_rune_event.insert(
+            &BlockId {
+              block: self.height.into(),
+              index: block_index.saturating_add(1),
+            }
+            .store(),
             &RuneEventEntry {
               rune_id: id,
               network: self.chain.network(),
@@ -601,6 +623,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             }
             .store(),
           )?;
+          *block_index += 1;
         }
       }
     }

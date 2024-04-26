@@ -62,6 +62,26 @@ pub struct RuneEventResponse {
   pub vout: i32,
 }
 
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlockId {
+  pub block: u64,
+  pub index: u32,
+}
+
+pub(crate) type BlockIdValue = (u64, u32);
+
+impl Entry for BlockId {
+  type Value = BlockIdValue;
+
+  fn load((block, index): Self::Value) -> Self {
+    Self { block, index }
+  }
+
+  fn store(self) -> Self::Value {
+    (self.block, self.index)
+  }
+}
+
 pub(crate) type RuneEventEntryValue = (
   (u64, u32),         // rune_id
   u8,                 // network

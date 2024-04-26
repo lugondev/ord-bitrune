@@ -399,7 +399,7 @@ impl<'index> Updater<'index> {
     let mut transaction_id_to_transaction = wtx.open_table(TRANSACTION_ID_TO_TRANSACTION)?;
     let mut sequence_number_to_inscription_transfer =
       wtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?; // @br-indexer
-    let mut sequence_number_to_rune_event = wtx.open_table(SEQUENCE_NUMBER_TO_RUNE_EVENT)?; // @br-indexer
+    let mut block_id_to_rune_event = wtx.open_table(BLOCK_ID_TO_RUNE_EVENT)?; // @br-indexer
 
     let mut lost_sats = statistic_to_count
       .get(&Statistic::LostSats.key())?
@@ -430,8 +430,6 @@ impl<'index> Updater<'index> {
 
     let next_sequence_number_transfer =
       IndexerFunction::get_next_sequence_number(sequence_number_to_inscription_transfer.iter()?);
-    let next_sequence_number_rune_event =
-      IndexerFunction::get_next_sequence_number(sequence_number_to_rune_event.iter()?);
 
     let home_inscription_count = home_inscriptions.len()?;
 
@@ -630,12 +628,12 @@ impl<'index> Updater<'index> {
         sequence_number_to_rune_id: &mut sequence_number_to_rune_id,
         statistic_to_count: &mut statistic_to_count,
         transaction_id_to_rune: &mut transaction_id_to_rune,
-        sequence_number_to_rune_event: &mut sequence_number_to_rune_event, // @todo br-indexer: config sequence_number_to_rune_event
-        next_sequence_number_rune_event, // @todo br-indexer: config next_sequence_number_rune_event
+        block_id_to_rune_event: &mut block_id_to_rune_event, // @todo br-indexer: config sequence_number_to_rune_event
       };
 
+      let mut block_index: u32 = 0;
       for (i, (tx, txid)) in block.txdata.iter().enumerate() {
-        rune_updater.index_runes(u32::try_from(i).unwrap(), tx, *txid)?;
+        rune_updater.index_runes(u32::try_from(i).unwrap(), tx, *txid, &mut block_index)?;
       }
 
       rune_updater.update()?;
