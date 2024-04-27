@@ -277,7 +277,8 @@ impl Server {
         .route("/runes/:page", get(Self::runes_paginated))
         .route("/runes/balances", get(Self::runes_balances))
         // @br-indexer: add router --> start
-        .route("/runes/events/:page", get(Self::runes_events))
+        .route("/runes/events/:block", get(Self::runes_events))
+        .route("/runes/events/page/:page", get(Self::runes_events_paginated))
         .route(
           "/inscriptions/entries/:page",
           get(Self::inscriptions_entries_paginated),
@@ -922,7 +923,7 @@ impl Server {
   ) -> ServerResult<Response> {
     task::block_in_place(|| {
       let mut data_size = 0;
-      let (runes_events, total) = index.get_runes_events_paginated(height)?;
+      let (runes_events, total) = index.get_runes_events_by_height(height)?;
       let runes_events_map_address: Vec<(BlockId, RuneEventResponse)> = runes_events
         .into_iter()
         .map(|(block_id, event)| {
@@ -949,7 +950,53 @@ impl Server {
         Json(RunesEventsJson {
           events: runes_events_map_address,
           total,
-          block: height,
+          block: u32::try_from(height).unwrap(),
+          size: data_size,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn runes_events_paginated(
+    Extension(index): Extension<Arc<Index>>,
+    Path(page_index): Path<usize>,
+    Query(pagination): Query<Pagination>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let (runes_events, total) = index.get_runes_events_paginated(
+        pagination.size.unwrap_or(100),
+        u32::try_from(page_index).unwrap_or_default(),
+      )?;
+
+      let mut data_size = 0;
+      let runes_events_map_address: Vec<(BlockId, RuneEventResponse)> = runes_events
+        .into_iter()
+        .map(|(block_id, event)| {
+          data_size += 1;
+          (
+            block_id,
+            RuneEventResponse {
+              rune_id: event.rune_id,
+              network: event.network,
+              event: event.event,
+              source: event.txid,
+              height: event.height,
+              txid: event.txid,
+              script_pubkey: event.script_pubkey,
+              amount: event.amount.to_string(),
+              vout: event.vout,
+              timestamp: event.timestamp,
+            },
+          )
+        })
+        .collect();
+
+      Ok(
+        Json(RunesEventsJson {
+          events: runes_events_map_address,
+          total,
+          block: index.block_count().unwrap_or_default(),
           size: data_size,
         })
         .into_response(),

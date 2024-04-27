@@ -7,7 +7,7 @@ use crate::indexer::rune_event::{BlockId, RuneEventResponse};
 pub struct RunesEventsJson {
   pub events: Vec<(BlockId, RuneEventResponse)>,
   pub total: u64,
-  pub block: u64,
+  pub block: u32,
   pub size: u32,
 }
 

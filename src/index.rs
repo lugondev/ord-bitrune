@@ -1809,7 +1809,7 @@ impl Index {
     Ok((inscriptions, total, more))
   }
 
-  pub(crate) fn get_runes_events_paginated(
+  pub(crate) fn get_runes_events_by_height(
     &self,
     block_height: u64,
   ) -> Result<(Vec<(BlockId, RuneEventEntry)>, u64)> {
@@ -1840,6 +1840,37 @@ impl Index {
       .collect::<Result<Vec<(BlockId, RuneEventEntry)>, StorageError>>()?;
 
     Ok((runes_events, total))
+  }
+
+  pub(crate) fn get_runes_events_paginated(
+    &self,
+    page_size: u32,
+    page_index: u32,
+  ) -> Result<(Vec<(BlockId, RuneEventEntry)>, u64)> {
+    let rtx = self.database.begin_read()?;
+
+    let block_id_to_rune_event_entry = rtx.open_table(BLOCK_ID_TO_RUNE_EVENT)?;
+    let total = block_id_to_rune_event_entry.len().unwrap_or(0);
+
+    let mut entries = Vec::new();
+
+    for result in block_id_to_rune_event_entry
+      .iter()?
+      .skip(usize::try_from(page_index.saturating_mul(page_size)).unwrap_or_default())
+      .take(usize::try_from(page_size.saturating_add(1)).unwrap_or_default())
+    {
+      let (id, entry) = result?;
+      entries.push((
+        BlockId::load(id.value()),
+        RuneEventEntry::load(entry.value()),
+      ));
+    }
+
+    let more = entries.len() > usize::try_from(page_size).unwrap_or_default();
+    if more {
+      entries.pop();
+    }
+    Ok((entries, total))
   }
 
   pub(crate) fn get_inscriptions_transfers_paginated(
