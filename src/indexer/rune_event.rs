@@ -11,7 +11,7 @@ pub enum RuneEvent {
   Mint,
   Transfer,
   Burn,
-  Used,
+  Spent,
 }
 
 impl RuneEvent {
@@ -20,7 +20,7 @@ impl RuneEvent {
       0 => RuneEvent::Mint,
       1 => RuneEvent::Transfer,
       2 => RuneEvent::Burn,
-      _ => RuneEvent::Used,
+      _ => RuneEvent::Spent,
     }
   }
 
@@ -29,13 +29,23 @@ impl RuneEvent {
       RuneEvent::Mint => 0,
       RuneEvent::Transfer => 1,
       RuneEvent::Burn => 2,
-      RuneEvent::Used => 3,
+      RuneEvent::Spent => 3,
     }
   }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+pub struct RuneChanges {
+  pub rune_id: RuneId,
+  pub network: Network,
+  pub height: u32,
+  pub mints: u128,
+  pub burned: u128,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub struct RuneEventEntry {
+  pub seq_no: u64,
   pub rune_id: RuneId,
   pub network: Network,
   pub event: RuneEvent,
@@ -50,6 +60,7 @@ pub struct RuneEventEntry {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub struct RuneEventResponse {
+  pub seq_no: u64,
   pub rune_id: RuneId,
   pub network: Network,
   pub event: RuneEvent,
@@ -82,7 +93,16 @@ impl Entry for BlockId {
   }
 }
 
+pub(crate) type RuneChangesValue = (
+  (u64, u32), // rune_id
+  u8,         // network
+  u32,        // height
+  u128,       // mints
+  u128,       // burned
+);
+
 pub(crate) type RuneEventEntryValue = (
+  u64,                // seq_no
   (u64, u32),         // rune_id
   u8,                 // network
   u8,                 // event
@@ -101,6 +121,7 @@ impl Entry for RuneEventEntry {
   #[rustfmt::skip]
   fn load(
     (
+    seq_no,
       rune_id,
       network,
       event,
@@ -114,6 +135,7 @@ impl Entry for RuneEventEntry {
     ): RuneEventEntryValue,
   ) -> Self {
     Self {
+      seq_no,
       rune_id: RuneId {
         block: rune_id.0,
         tx: rune_id.1,
@@ -155,6 +177,7 @@ impl Entry for RuneEventEntry {
 
   fn store(self) -> Self::Value {
     (
+      self.seq_no,
       (self.rune_id.block, self.rune_id.tx),
       match self.network {
         Network::Bitcoin => 0,
@@ -194,6 +217,52 @@ impl Entry for RuneEventEntry {
       self.amount,
       self.timestamp,
       self.vout,
+    )
+  }
+}
+
+impl Entry for RuneChanges {
+  type Value = RuneChangesValue;
+
+  #[rustfmt::skip]
+  fn load(
+    (
+      rune_id,
+      network,
+      height,
+      mints,
+      burned,
+    ): RuneChangesValue,
+  ) -> Self {
+    Self {
+      rune_id: RuneId {
+        block: rune_id.0,
+        tx: rune_id.1,
+      },
+      network: match network {
+        0 => Network::Bitcoin,
+        1 => Network::Testnet,
+        2 => Network::Regtest,
+        _ => Network::Signet,
+      },
+      height,
+      mints,
+      burned,
+    }
+  }
+
+  fn store(self) -> Self::Value {
+    (
+      (self.rune_id.block, self.rune_id.tx),
+      match self.network {
+        Network::Bitcoin => 0,
+        Network::Testnet => 1,
+        Network::Regtest => 2,
+        _ => 3,
+      },
+      self.height,
+      self.mints,
+      self.burned,
     )
   }
 }

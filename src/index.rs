@@ -35,7 +35,7 @@ use {
   },
 };
 
-use crate::indexer::rune_event::{BlockId, BlockIdValue};
+use crate::indexer::rune_event::{BlockId, BlockIdValue, RuneChanges, RuneChangesValue};
 use crate::indexer::{
   function::IndexerFunction,
   inscription_transfer::{InscriptionTransfer, InscriptionTransferValue},
@@ -81,6 +81,8 @@ define_table! { TRANSACTION_ID_TO_TRANSACTION, &TxidValue, &[u8] }
 define_table! { WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP, u32, u128 }
 define_table! { SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER, u32, InscriptionTransferValue } // @todo: br-indexer: add this table
 define_table! { BLOCK_ID_TO_RUNE_EVENT, BlockIdValue, RuneEventEntryValue } // @todo: br-indexer: add this table
+define_table! { BLOCK_ID_TO_RUNE_SPENT, BlockIdValue, RuneEventEntryValue } // @todo: br-indexer: add this table
+define_table! { LAST_BLOCK_ID_TO_RUNE_CHANGES, BlockIdValue, RuneChangesValue } // @todo: br-indexer: add this table
 
 #[derive(Copy, Clone)]
 pub(crate) enum Statistic {
@@ -325,6 +327,7 @@ impl Index {
         tx.open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?;
         tx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?; // @br-indexer: add this table
         tx.open_table(BLOCK_ID_TO_RUNE_EVENT)?; // @br-indexer: add this table
+        tx.open_table(LAST_BLOCK_ID_TO_RUNE_CHANGES)?; // @br-indexer: add this table
 
         {
           let mut outpoint_to_sat_ranges = tx.open_table(OUTPOINT_TO_SAT_RANGES)?;
@@ -1812,9 +1815,13 @@ impl Index {
   pub(crate) fn get_runes_events_by_height(
     &self,
     block_height: u64,
+    is_spent: bool,
   ) -> Result<(Vec<(BlockId, RuneEventEntry)>, u64)> {
     let rtx = self.database.begin_read()?;
-    let block_id_to_rune_event_entry = rtx.open_table(BLOCK_ID_TO_RUNE_EVENT)?;
+    let mut block_id_to_rune_event_entry = rtx.open_table(BLOCK_ID_TO_RUNE_EVENT)?;
+    if is_spent {
+      block_id_to_rune_event_entry = rtx.open_table(BLOCK_ID_TO_RUNE_SPENT)?;
+    }
     let total = block_id_to_rune_event_entry.len().unwrap_or(0);
 
     let min_id = BlockId {
@@ -1840,6 +1847,32 @@ impl Index {
       .collect::<Result<Vec<(BlockId, RuneEventEntry)>, StorageError>>()?;
 
     Ok((runes_events, total))
+  }
+
+  pub(crate) fn get_runes_changes_by_height(
+    &self,
+    block_height: u64,
+  ) -> Result<(Vec<RuneChanges>, u64)> {
+    let rtx = self.database.begin_read()?;
+    let last_block_id_to_rune_event_entry = rtx.open_table(LAST_BLOCK_ID_TO_RUNE_CHANGES)?;
+    let total = last_block_id_to_rune_event_entry.len().unwrap_or(0);
+
+    let min_id = BlockId {
+      block: block_height,
+      index: 0,
+    };
+
+    let max_id = BlockId {
+      block: block_height,
+      index: u32::MAX,
+    };
+
+    let runes_changes = last_block_id_to_rune_event_entry
+      .range(min_id.store()..=max_id.store())?
+      .map(|result| result.map(|(_, entry)| RuneChanges::load(entry.value())))
+      .collect::<Result<Vec<RuneChanges>, StorageError>>()?;
+
+    Ok((runes_changes, total))
   }
 
   pub(crate) fn get_runes_events_paginated(
@@ -1903,6 +1936,34 @@ impl Index {
     }
 
     Ok((inscriptions_transfers, total, more))
+  }
+
+  pub(crate) fn get_runes_entries_in_block(
+    &self,
+    block_height: u64,
+  ) -> Result<Vec<(RuneId, RuneEntry)>> {
+    let rtx = self.database.begin_read()?;
+
+    let rune_id_to_rune_entry = rtx.open_table(RUNE_ID_TO_RUNE_ENTRY)?;
+
+    let min_id = RuneId {
+      block: block_height,
+      tx: 0,
+    };
+
+    let max_id = RuneId {
+      block: block_height,
+      tx: u32::MAX,
+    };
+
+    let runes = rune_id_to_rune_entry
+      .range(min_id.store()..=max_id.store())?
+      .map(|result| {
+        result.map(|(id, entry)| (RuneId::load(id.value()), RuneEntry::load(entry.value())))
+      })
+      .collect::<Result<Vec<(RuneId, RuneEntry)>, StorageError>>()?;
+
+    Ok(runes)
   }
   // @br-indexer: add index function --> end
 

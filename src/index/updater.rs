@@ -399,7 +399,6 @@ impl<'index> Updater<'index> {
     let mut transaction_id_to_transaction = wtx.open_table(TRANSACTION_ID_TO_TRANSACTION)?;
     let mut sequence_number_to_inscription_transfer =
       wtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_TRANSFER)?; // @br-indexer
-    let mut block_id_to_rune_event = wtx.open_table(BLOCK_ID_TO_RUNE_EVENT)?; // @br-indexer
 
     let mut lost_sats = statistic_to_count
       .get(&Statistic::LostSats.key())?
@@ -604,6 +603,10 @@ impl<'index> Updater<'index> {
       let mut sequence_number_to_rune_id = wtx.open_table(SEQUENCE_NUMBER_TO_RUNE_ID)?;
       let mut transaction_id_to_rune = wtx.open_table(TRANSACTION_ID_TO_RUNE)?;
 
+      let mut block_id_to_rune_event = wtx.open_table(BLOCK_ID_TO_RUNE_EVENT)?; // @br-indexer
+      let mut block_id_to_rune_spent = wtx.open_table(BLOCK_ID_TO_RUNE_SPENT)?; // @br-indexer
+      let mut last_block_id_to_rune_changes = wtx.open_table(LAST_BLOCK_ID_TO_RUNE_CHANGES)?; // @br-indexer
+
       let runes = statistic_to_count
         .get(&Statistic::Runes.into())?
         .map(|x| x.value())
@@ -614,6 +617,7 @@ impl<'index> Updater<'index> {
         event_sender: self.index.event_sender.as_ref(),
         block_time: block.header.time,
         burned: HashMap::new(),
+        mints: HashMap::new(),
         client: &self.index.client,
         height: self.height,
         id_to_entry: &mut rune_id_to_rune_entry,
@@ -628,7 +632,9 @@ impl<'index> Updater<'index> {
         sequence_number_to_rune_id: &mut sequence_number_to_rune_id,
         statistic_to_count: &mut statistic_to_count,
         transaction_id_to_rune: &mut transaction_id_to_rune,
-        block_id_to_rune_event: &mut block_id_to_rune_event, // @todo br-indexer: config sequence_number_to_rune_event
+        block_id_to_rune_event: &mut block_id_to_rune_event, // @todo br-indexer: config
+        block_id_to_rune_spent: &mut block_id_to_rune_spent, // @todo br-indexer: config
+        last_block_id_to_rune_changes: &mut last_block_id_to_rune_changes, // @todo br-indexer: config
       };
 
       let mut block_index: u32 = 0;

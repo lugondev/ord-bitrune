@@ -1,13 +1,16 @@
 use super::*;
 use crate::indexer::rune_event::{
-  BlockId, BlockIdValue, RuneEvent, RuneEventEntry, RuneEventEntryValue,
+  BlockId, BlockIdValue, RuneChanges, RuneEvent, RuneEventEntry, RuneEventEntryValue,
 };
 
 pub(super) struct RuneUpdater<'a, 'tx, 'client> {
   pub(super) chain: Chain,
   pub(super) block_id_to_rune_event: &'a mut Table<'tx, BlockIdValue, RuneEventEntryValue>,
+  pub(super) block_id_to_rune_spent: &'a mut Table<'tx, BlockIdValue, RuneEventEntryValue>,
+  pub(super) last_block_id_to_rune_changes: &'a mut Table<'tx, BlockIdValue, RuneChangesValue>,
   pub(super) block_time: u32,
   pub(super) burned: HashMap<RuneId, Lot>,
+  pub(super) mints: HashMap<RuneId, Lot>,
   pub(super) client: &'client Client,
   pub(super) event_sender: Option<&'a Sender<Event>>,
   pub(super) height: u32,
@@ -36,6 +39,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     let mut unallocated = self.unallocated(tx, &mut rune_inputs, block_index)?;
 
     let mut allocated: Vec<HashMap<RuneId, Lot>> = vec![HashMap::new(); tx.output.len()];
+    let mut seq_number_rune_event = self.block_id_to_rune_event.len().unwrap_or(0); // @br-indexer
 
     if let Some(artifact) = &artifact {
       if let Some(id) = artifact.mint() {
@@ -50,6 +54,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             }
             .store(),
             &RuneEventEntry {
+              seq_no: seq_number_rune_event.saturating_add(1),
               rune_id: id,
               network: self.chain.network(),
               event: RuneEvent::Mint,
@@ -64,6 +69,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             .store(),
           )?;
           *block_index += 1;
+          seq_number_rune_event += 1;
           // @todo br-indexer - new input --> end
 
           if let Some(sender) = self.event_sender {
@@ -242,6 +248,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           }
           .store(),
           &RuneEventEntry {
+            seq_no: seq_number_rune_event.saturating_add(1),
             rune_id: id,
             network: self.chain.network(),
             event: RuneEvent::Transfer,
@@ -256,6 +263,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           .store(),
         )?;
         *block_index += 1;
+        seq_number_rune_event += 1;
         // @todo br-indexer - new output --> end
 
         if let Some(sender) = self.event_sender {
@@ -295,6 +303,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           }
           .store(),
           &RuneEventEntry {
+            seq_no: seq_number_rune_event.saturating_add(1),
             rune_id: id,
             network: self.chain.network(),
             event: RuneEvent::Burn,
@@ -309,6 +318,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           .store(),
         )?;
         *block_index += 1;
+        seq_number_rune_event += 1;
       } else {
         for input in rune_inputs.entry(id).or_default().iter() {
           self.block_id_to_rune_event.insert(
@@ -318,6 +328,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             }
             .store(),
             &RuneEventEntry {
+              seq_no: seq_number_rune_event.saturating_add(1),
               rune_id: id,
               network: self.chain.network(),
               event: RuneEvent::Burn,
@@ -332,6 +343,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             .store(),
           )?;
           *block_index += 1;
+          seq_number_rune_event += 1;
         }
       }
       // @todo br-indexer --> end
@@ -341,11 +353,48 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
   }
 
   pub(super) fn update(self) -> Result {
+    let mut rune_changes: Vec<RuneId> = Vec::new();
     for (rune_id, burned) in self.burned {
       let mut entry = RuneEntry::load(self.id_to_entry.get(&rune_id.store())?.unwrap().value());
       entry.burned = entry.burned.checked_add(burned.n()).unwrap();
       self.id_to_entry.insert(&rune_id.store(), entry.store())?;
+
+      // @todo br-indexer - handle burned runes --> start
+      if !rune_changes.contains(&rune_id) {
+        rune_changes.push(rune_id);
+      }
+      // @todo br-indexer - handle burned runes --> end
     }
+    for (rune_id, mints) in self.mints {
+      // @todo br-indexer - handle minted runes --> start
+      if !rune_changes.contains(&rune_id) {
+        rune_changes.push(rune_id);
+      }
+      // @todo br-indexer - handle minted runes --> end
+    }
+
+    // @todo br-indexer - store rune changes --> start
+    let mut block_index: u32 = 1;
+    for rune_id in rune_changes {
+      let entry = RuneEntry::load(self.id_to_entry.get(&rune_id.store())?.unwrap().value());
+      let rune_changes = RuneChanges {
+        rune_id,
+        network: self.chain.network(),
+        height: self.height,
+        mints: entry.mints,
+        burned: entry.burned,
+      };
+      self.last_block_id_to_rune_changes.insert(
+        &BlockId {
+          block: self.height.into(),
+          index: block_index,
+        }
+        .store(),
+        &rune_changes.store(),
+      )?;
+      block_index += 1;
+    }
+    // @todo br-indexer - store rune changes --> end
 
     Ok(())
   }
@@ -503,6 +552,10 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
 
     rune_entry.mints += 1;
 
+    // @todo br-indexer - handle mint runes --> start
+    *self.mints.entry(id).or_default() += 1;
+    // @todo br-indexer - handle mint runes --> end
+
     self.id_to_entry.insert(&id.store(), rune_entry.store())?;
 
     Ok(Some(Lot(amount)))
@@ -603,16 +656,17 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
             .or_default()
             .push(input.previous_output);
 
-          self.block_id_to_rune_event.insert(
+          self.block_id_to_rune_spent.insert(
             &BlockId {
               block: self.height.into(),
               index: block_index.saturating_add(1),
             }
             .store(),
             &RuneEventEntry {
+              seq_no: 0,
               rune_id: id,
               network: self.chain.network(),
-              event: RuneEvent::Used,
+              event: RuneEvent::Spent,
               source: tx.txid(),
               height: self.height,
               txid: input.previous_output.txid,

@@ -53,6 +53,7 @@ use {
 };
 
 use crate::indexer::rune_event::BlockId;
+use crate::templates::indexer::RunesChangesJson;
 pub(crate) use server_config::ServerConfig;
 
 mod accept_encoding;
@@ -277,6 +278,9 @@ impl Server {
         .route("/runes/:page", get(Self::runes_paginated))
         .route("/runes/balances", get(Self::runes_balances))
         // @br-indexer: add router --> start
+        .route("/runes/entries/:block", get(Self::runes_in_block))
+        .route("/runes/changes/:block", get(Self::runes_changes))
+        .route("/runes/spent/:block", get(Self::runes_events_spent))
         .route("/runes/events/:block", get(Self::runes_events))
         .route("/runes/events/page/:page", get(Self::runes_events_paginated))
         .route(
@@ -917,13 +921,24 @@ impl Server {
     })
   }
 
+  async fn runes_events_spent(
+    Extension(index): Extension<Arc<Index>>,
+    Path(height): Path<u64>,
+  ) -> ServerResult<Response> {
+    return Self::_runes_events(&index, height, true).await;
+  }
+
   async fn runes_events(
     Extension(index): Extension<Arc<Index>>,
     Path(height): Path<u64>,
   ) -> ServerResult<Response> {
+    return Self::_runes_events(&index, height, false).await;
+  }
+
+  async fn _runes_events(index: &Index, height: u64, is_spent: bool) -> ServerResult<Response> {
     task::block_in_place(|| {
       let mut data_size = 0;
-      let (runes_events, total) = index.get_runes_events_by_height(height)?;
+      let (runes_events, total) = index.get_runes_events_by_height(height, is_spent)?;
       let runes_events_map_address: Vec<(BlockId, RuneEventResponse)> = runes_events
         .into_iter()
         .map(|(block_id, event)| {
@@ -931,6 +946,7 @@ impl Server {
           (
             block_id,
             RuneEventResponse {
+              seq_no: event.seq_no,
               rune_id: event.rune_id,
               network: event.network,
               event: event.event,
@@ -958,6 +974,35 @@ impl Server {
     })
   }
 
+  async fn runes_changes(
+    Extension(index): Extension<Arc<Index>>,
+    Path(height): Path<u64>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let (runes_changes, total) = index.get_runes_changes_by_height(height)?;
+      let size = runes_changes.len();
+      Ok(
+        Json(RunesChangesJson {
+          data: runes_changes,
+          total,
+          block: u32::try_from(height).unwrap(),
+          size,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn runes_in_block(
+    Extension(index): Extension<Arc<Index>>,
+    Path(height): Path<u64>,
+  ) -> ServerResult<Response> {
+    task::block_in_place(|| {
+      let runes_entries = index.get_runes_entries_in_block(u64::from(height))?;
+      Ok(Json(runes_entries).into_response())
+    })
+  }
+
   async fn runes_events_paginated(
     Extension(index): Extension<Arc<Index>>,
     Path(page_index): Path<usize>,
@@ -977,6 +1022,7 @@ impl Server {
           (
             block_id,
             RuneEventResponse {
+              seq_no: event.seq_no,
               rune_id: event.rune_id,
               network: event.network,
               event: event.event,
